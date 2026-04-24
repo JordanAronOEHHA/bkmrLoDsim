@@ -38,10 +38,8 @@ print(paste("exposure_dist:", exposure_dist))
 print(paste("h_dist:", h_dist))
 
 ####### Hyper Parameters #######
-p <- 2
+p <- 3
 rho_corr <- 0 # Correlation between chemicals
-
-
 
 ####### Functions ########
 mse <- function(true, pred) mean((true - apply(pred, 2, mean))^2)
@@ -221,7 +219,7 @@ if (exposure_dist == "lnorm") {
 if (h_dist == "nonlinear") {
   h_true <- 4 * plogis(1/4 * (Z_response[,1] + Z_response[,2] + 1/2 * (Z_response[,1]) * (Z_response[,2])), location = plogis_mean, scale = 0.5)
 } else if (h_dist == "linear") {
-  h_true <- (Z_response[,1] + Z_response[,2] - 2*plogis_mean)^2
+  h_true <- ((Z_response[,1]-plogis_mean)*(Z_response[,1]>=plogis_mean) + (Z_response[,2]-plogis_mean)*(Z_response[,2]>=plogis_mean) )^2
 } else {
   stop("h_dist must be 'linear' or 'nonlinear'")
 }
