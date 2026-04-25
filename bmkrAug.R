@@ -3,6 +3,8 @@ start_time <- Sys.time()
 library(bkmr)
 # library(ggplot2)
 library(dplyr)
+library(mice)
+library(qgcomp)
 
 # 1. Setup Simulation Parameters
 #TODO set array number to seed if present
@@ -39,7 +41,12 @@ print(paste("h_dist:", h_dist))
 
 ####### Hyper Parameters #######
 p <- 3
-rho_corr <- 0 # Correlation between chemicals
+
+#number of completed datasets
+m_imputations <- 5
+#number of iterations for the imputation model
+mi_maxit <- 10
+mi_seed <- seed
 
 ####### Functions ########
 mse <- function(true, pred) mean((true - apply(pred, 2, mean))^2)
@@ -143,13 +150,33 @@ if (!any(complete_case_idx)) {
   stop("No complete cases available for complete-case model fitting.")
 }
 
+#### Response
+if (exposure_dist == "lnorm") {
+  Z_response <- log(Z_true)
+  plogis_mean <- 2
+} else {
+  Z_response <- log(Z_true)
+  plogis_mean <- 2
+}
+
+if (h_dist == "nonlinear") {
+  h_true <- 4 * plogis(1/4 * (Z_response[,1] + Z_response[,2] + 1/2 * (Z_response[,1]) * (Z_response[,2])), location = plogis_mean, scale = 0.5)
+} else if (h_dist == "linear") {
+  h_true <- Z_response[, 1] + Z_response[, 2] + 0.5 * Z_response[, 1] * Z_response[, 2]
+} else {
+  stop("h_dist must be 'linear' or 'nonlinear'")
+}
+
+y <- h_true + rnorm(n, sd = 1)
+y_complete_case <- y[complete_case_idx]
+
 ##### Models
 # A. Uncensored
 # B. Imputation (LoD / sqrt(2))
 # C. Augmented (Indicator + Continuous)
 # D. Complete case
+# E. Truncated MI (tobit lognormal?)
 # TODO
-# E. Truncated MI (tobit lognormal)
 # F. Pseudo-Gibbs (Carli et al) ie. impute using gibbs in each MCMC iteration 
 #this might not make sense for computational/time to implement
 
@@ -191,54 +218,88 @@ for(j in 1:p) {
 #D. Complete case
 Z_complete_case <- Z_uncensored[complete_case_idx, , drop = FALSE]
 
+# E. Truncated multiple imputation using qgcomp::mice.impute.leftcenslognorm
+mice.impute.leftcenslognorm <- qgcomp::mice.impute.leftcenslognorm
+mi_data <- cbind(y, Z_obs) |> as.data.frame()
+colnames(mi_data) <- c("y", paste0("z", seq_len(p)))
+
+#call with no iterations to get default settings
+mi_init <- mice(mi_data, maxit = 0, printFlag = FALSE)
+
+method_trunc <- mi_init$method
+method_trunc[2:(p+1)] <- "leftcenslognorm"
+
+predictor_matrix_trunc <- mi_init$predictorMatrix
+predictor_matrix_trunc[,2:(p+1)] <- 0
+
+mids_trunc <- mice(
+  data = mi_data,
+  m = m_imputations,
+  maxit = mi_maxit,
+  method = method_trunc,
+  predictorMatrix = predictor_matrix_trunc,
+  lod = c(NA, lod),
+  seed = mi_seed,
+  printFlag = FALSE
+)
+
+Z_trunc_mi_raw_list <- complete(mids_trunc, action = "all") |>
+  lapply(function(dat) {
+    dat[, paste0("z", seq_len(p)), drop = FALSE] |>
+      as.matrix()
+  })
+
+log_obs_for_scaling <- log(Z_obs)
+trunc_mi_center <- colMeans(log_obs_for_scaling, na.rm = TRUE)
+trunc_mi_scale <- apply(log_obs_for_scaling, 2, sd, na.rm = TRUE)
 
 #### Scaling
 #except for augmented continuous since that needs to be handled seperately due to the LoD adjustment
 #should be in the code block directly above this 
-if (exposure_dist == "lnorm") {
-  Z_uncensored <- scale(log(Z_true))
-  Z_impute <- scale(log(Z_impute))
-  Z_complete_case <- scale(log(Z_complete_case))
-} else {
-  Z_uncensored <- scale(log(Z_true))
-  Z_impute <- scale(log(Z_impute))
-  Z_complete_case <- scale(log(Z_complete_case))
-}
+#multiple imputation tobit also needs to be handled separately, done in next codeblock 
+Z_uncensored <- scale(log(Z_true))
+Z_impute <- scale(log(Z_impute))
+Z_complete_case <- scale(log(Z_complete_case))
 
 
-
-#### Response
-if (exposure_dist == "lnorm") {
-  Z_response <- log(Z_true)
-  plogis_mean <- 2
-} else {
-  Z_response <- log(Z_true)
-  plogis_mean <- 2
-}
-
-if (h_dist == "nonlinear") {
-  h_true <- 4 * plogis(1/4 * (Z_response[,1] + Z_response[,2] + 1/2 * (Z_response[,1]) * (Z_response[,2])), location = plogis_mean, scale = 0.5)
-} else if (h_dist == "linear") {
-  h_true <- ((Z_response[,1]-plogis_mean)*(Z_response[,1]>=plogis_mean) + (Z_response[,2]-plogis_mean)*(Z_response[,2]>=plogis_mean) )^2
-} else {
-  stop("h_dist must be 'linear' or 'nonlinear'")
-}
-
-y <- h_true + rnorm(n, sd = 1)
-y_complete_case <- y[complete_case_idx]
 
 # Run Models
+#create empty lists to store results for MI 
+Z_trunc_mi_list <- vector("list", length = m_imputations)
+fit_trunc_mi_list <- vector("list", length = m_imputations)
+pred_trunc_mi_list <- vector("list", length = m_imputations)
+
 
 m_uncensored <- kmbayes(y = y, Z = Z_uncensored, iter = mcmc_iter)
 m_impute     <- kmbayes(y = y, Z = Z_impute, iter = mcmc_iter)
 m_augmented  <- kmbayes(y = y, Z = Z_aug, iter = mcmc_iter)
 m_complete_case <- kmbayes(y = y_complete_case, Z = Z_complete_case, iter = mcmc_iter)
 
+#MI model
+
+for (m in seq_len(m_imputations)) {
+  Z_trunc_mi_list[[m]] <- scale(
+    log(Z_trunc_mi_raw_list[[m]]),
+    center = trunc_mi_center,
+    scale = trunc_mi_scale
+  )
+  fit_trunc_mi_list[[m]] <- kmbayes(
+    y = y,
+    Z = Z_trunc_mi_list[[m]],
+    iter = mcmc_iter
+  )
+  pred_trunc_mi_list[[m]] <- SamplePred(
+    fit_trunc_mi_list[[m]],
+    Znew = Z_trunc_mi_list[[m]]
+  )
+}
+
 # Predict h for each model on the fitted data
 pred_uncensored <- SamplePred(m_uncensored, Znew = Z_uncensored)
 pred_impute     <- SamplePred(m_impute, Znew = Z_impute)
 pred_augmented  <- SamplePred(m_augmented, Znew = Z_aug)
 pred_complete_case <- SamplePred(m_complete_case, Znew = Z_complete_case)
+pred_trunc_mi <- do.call(rbind, pred_trunc_mi_list)
 
 # Determine how many values per observation are below LoD
 group <- rowSums(is.na(Z_obs))
@@ -247,11 +308,13 @@ results_uncens  <- mse_by_lod_count(h_true, pred_uncensored, group, p)
 results_impute  <- mse_by_lod_count(h_true, pred_impute, group, p)
 results_augment <- mse_by_lod_count(h_true, pred_augmented, group, p)
 results_complete_case <- mse_by_lod_count(h_true[complete_case_idx], pred_complete_case, group_complete_case, p)
+results_trunc_mi <- mse_by_lod_count(h_true, pred_trunc_mi, group, p)
 
 results_uncens_first2  <- mse_by_first2_lod(h_true, pred_uncensored, Z_obs)
 results_imputes_first2  <- mse_by_first2_lod(h_true, pred_impute, Z_obs)
 results_augments_first2 <- mse_by_first2_lod(h_true, pred_augmented, Z_obs)
-results_complete_case_first2 <- mse_by_first2_lod(h_true[complete_case_idx], pred_complete_case, Z_obs[complete_case_idx, , drop = FALSE])
+results_complete_case_first2 <- mse_by_first2_lod( h_true[complete_case_idx], pred_complete_case, Z_obs[complete_case_idx, , drop = FALSE])
+results_trunc_mi_first2 <- mse_by_first2_lod(h_true, pred_trunc_mi, Z_obs)
 
 sim_results <- list(
   settings = list(
@@ -261,7 +324,9 @@ sim_results <- list(
     lod_quantile = lod_quantile,
     exposure_dist = exposure_dist,
     h_dist = h_dist,
-    mcmc_iter = mcmc_iter
+    mcmc_iter = mcmc_iter,
+    m_imputations = m_imputations,
+    mi_maxit = mi_maxit
   ),
   logistics = list(
     run_time = Sys.time() - start_time,
@@ -272,13 +337,15 @@ sim_results <- list(
       uncensored = results_uncens,
       impute = results_impute,
       augment = results_augment,
-      complete_case = results_complete_case
+      complete_case = results_complete_case,
+      trunc_mi = results_trunc_mi
     ),
     mse_by_first2_lod = list(
       uncensored = results_uncens_first2,
       impute = results_imputes_first2,
       augment = results_augments_first2,
-      complete_case = results_complete_case_first2
+      complete_case = results_complete_case_first2,
+      trunc_mi = results_trunc_mi_first2
     )
   )
 )

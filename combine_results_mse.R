@@ -130,9 +130,9 @@ combined_results <- list(
 
 
 process_df <- combined_results$mse_by_lod_count_summary |> 
-  filter(group == "0" | group == "1") |>
+  filter(group == "0" ) |>
   select(
-    group,
+    # group,
     n,
     lod_quantile,
     exposure_dist,
@@ -141,7 +141,8 @@ process_df <- combined_results$mse_by_lod_count_summary |>
       "pooled_mse_uncensored",
       "pooled_mse_impute",
       "pooled_mse_augment",
-      "pooled_mse_complete_case"
+      "pooled_mse_trunc_mi"
+      # "pooled_mse_complete_case"
     ))
   )
 
@@ -152,7 +153,7 @@ library(looplot)
 
 plot_data = nested_loop_base_data(
     process_df, 
-    x = "lod_quantile", steps = c("n","group"),
+    x = "lod_quantile", steps = c("n"),
     grid_cols = "exposure_dist", grid_rows = "h_dist",
     spu_x_shift = .2
 )

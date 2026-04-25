@@ -1,11 +1,11 @@
 #!/bin/bash -l
 for size in 400 800; do
     if [[ $size == "400" ]]; then
-        time_limit="1:30:00"
-        mem_gb="2"
+        time_limit="5:00:00"
+        mem_gb="3"
     else
-        time_limit="6:00:00"
-        mem_gb="2"
+        time_limit="16:00:00"
+        mem_gb="3"
     fi
 
     for lod_quantile in 0.25 0.5 0.75; do
