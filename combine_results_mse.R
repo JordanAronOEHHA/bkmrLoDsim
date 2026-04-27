@@ -10,40 +10,57 @@ if (length(result_files) == 0) {
 
 read_sim_result <- function(path) {
   sim_result <- readRDS(path)
+
   settings_tbl <- as_tibble(sim_result$settings)
+
   logistics_tbl <- tibble(
     run_time = as.numeric(sim_result$logistics$run_time, units = "mins"),
     run_mem = sim_result$logistics$run_mem,
     file = basename(path)
   )
+
   metadata_tbl <- bind_cols(settings_tbl, logistics_tbl)
 
-  mse_by_lod_count <-
-    imap_dfr(
-      sim_result$results$mse_by_lod_count,
-      \(result_tbl, method) {
-        out <- as_tibble(result_tbl) |>
-          mutate(method = method)
+  split_results <- imap_dfr(
+    sim_result$results,
+    \(split_obj, split_name) {
+      mse_by_lod_count <- imap_dfr(
+        split_obj$mse_by_lod_count,
+        \(result_tbl, method) {
+          out <- as_tibble(result_tbl) |>
+            mutate(
+              split = split_name,
+              method = method
+            )
 
-        bind_cols(metadata_tbl, out)
-      }
-    )
+          bind_cols(metadata_tbl, out)
+        }
+      )
 
-  mse_by_first2_lod <-
-    imap_dfr(
-      sim_result$results$mse_by_first2_lod,
-      \(result_tbl, method) {
-        out <- as_tibble(result_tbl) |>
-          mutate(method = method)
+      mse_by_first2_lod <- imap_dfr(
+        split_obj$mse_by_first2_lod,
+        \(result_tbl, method) {
+          out <- as_tibble(result_tbl) |>
+            mutate(
+              split = split_name,
+              method = method
+            )
 
-        bind_cols(metadata_tbl, out)
-      }
-    )
+          bind_cols(metadata_tbl, out)
+        }
+      )
+
+      list(
+        mse_by_lod_count = mse_by_lod_count,
+        mse_by_first2_lod = mse_by_first2_lod
+      )
+    }
+  )
 
   list(
     file_metadata = metadata_tbl,
-    mse_by_lod_count = mse_by_lod_count,
-    mse_by_first2_lod = mse_by_first2_lod
+    mse_by_lod_count = map_dfr(split_results$mse_by_lod_count, identity),
+    mse_by_first2_lod = map_dfr(split_results$mse_by_first2_lod, identity)
   )
 }
 
@@ -89,6 +106,7 @@ combined_mse_by_first2_lod <- map_dfr(combined_raw, "mse_by_first2_lod")
 
 scenario_cols <- c(
   "n",
+  "n_te",
   "p",
   "lod_quantile",
   "exposure_dist",
@@ -98,13 +116,13 @@ scenario_cols <- c(
 
 mse_by_lod_count_summary <- pool_mse(
   combined_mse_by_lod_count,
-  c(scenario_cols, "method", "group")
+  c(scenario_cols, "split", "method", "group")
 ) |>
   pivot_pooled_mse_wider()
 
 mse_by_first2_lod_summary <- pool_mse(
   combined_mse_by_first2_lod,
-  c(scenario_cols, "method", "group")
+  c(scenario_cols, "split", "method", "group")
 ) |>
   pivot_pooled_mse_wider()
 
@@ -115,6 +133,12 @@ logistics_summary <- pool_logistics(
 )
 
 logistics_summary
+
+logistics_summary |>
+  dplyr::summarise(
+    max_max_run_time = max(max_run_time, na.rm = TRUE),
+    .by = n
+  )
 
 combined_results <- list(
   files = combined_file_metadata,
@@ -128,12 +152,15 @@ combined_results <- list(
 # process_df <- combined_results$mse_by_first2_lod_summary |> 
 #   select(n,lod_quantile,exposure_dist,h_dist,group,pooled_mse_uncensored, pooled_mse_impute, pooled_mse_augment)
 
-
 process_df <- combined_results$mse_by_lod_count_summary |> 
-  filter(group == "0" ) |>
+  filter(
+    split == "testing",
+    group == "0"
+  ) |>
   select(
-    # group,
+    split,
     n,
+    n_te,
     lod_quantile,
     exposure_dist,
     h_dist,
@@ -141,8 +168,8 @@ process_df <- combined_results$mse_by_lod_count_summary |>
       "pooled_mse_uncensored",
       "pooled_mse_impute",
       "pooled_mse_augment",
-      "pooled_mse_trunc_mi"
-      # "pooled_mse_complete_case"
+      "pooled_mse_trunc_mi",
+      "pooled_mse_complete_case"
     ))
   )
 
