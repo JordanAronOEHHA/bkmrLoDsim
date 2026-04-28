@@ -52,3 +52,7 @@ rsconnect/
 
 # results folder
 Routputs*/
+
+# figures
+*.png
+*.jpg
