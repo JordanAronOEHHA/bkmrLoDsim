@@ -6,6 +6,8 @@ library(dplyr)
 library(mice)
 library(qgcomp)
 
+#### Setup Parameters ####
+
 # 1. Setup Simulation Parameters
 #TODO set array number to seed if present
 seed <- as.numeric(Sys.getenv('SLURM_ARRAY_TASK_ID'))
@@ -17,12 +19,12 @@ if (is.na(seed)){
 }
 set.seed(seed)
 
-####### Control Parameters #######
 
+##### Control Parameters #####
 # Defaults 
 n <- 300
-n_te <- 1000
-lod_quantile <- 0.9
+n_te <- n
+lod_quantile <- 0.1
 exposure_dist <- "lnorm" # Options: lnorm unif gamma
 h_dist <- "nonlinear" # Options: linear nonlinear
 
@@ -41,7 +43,7 @@ print(paste("lod_quantile:", lod_quantile))
 print(paste("exposure_dist:", exposure_dist))
 print(paste("h_dist:", h_dist))
 
-####### Hyper Parameters #######
+##### Hyper Parameters #####
 p <- 3
 
 #number of completed datasets
@@ -50,7 +52,7 @@ m_imputations <- 5
 mi_maxit <- 10
 mi_seed <- seed
 
-####### Functions ########
+#### Functions #####
 
 ##### MSE functions #####
 mse <- function(true, pred) mean((true - apply(pred, 2, mean))^2)
@@ -163,6 +165,7 @@ SingleImputation <- function(Z_obs, lod) {
   }
   return(Z_impute)
 }
+
 AugmentData <- function(Z_obs, lod, center = NULL, scale_vals = NULL) {
   p <- ncol(Z_obs)
   Z_aug_cont <- log(Z_obs)
@@ -176,19 +179,10 @@ AugmentData <- function(Z_obs, lod, center = NULL, scale_vals = NULL) {
 
   Z_aug_cont <- sweep(Z_aug_cont, 2, log(lod), "-")
 
-  if (is.null(center)) {
-    center <- colMeans(Z_aug_cont)
-  }
+  if (is.null(center)) {center <- colMeans(Z_aug_cont)}
+  if (is.null(scale_vals)) {scale_vals <- apply(Z_aug_cont, 2, sd)}
 
-  if (is.null(scale_vals)) {
-    scale_vals <- apply(Z_aug_cont, 2, sd)
-  }
-
-  Z_aug_cont_scaled <- scale(
-    Z_aug_cont,
-    center = center,
-    scale = scale_vals
-  )
+  Z_aug_cont_scaled <- scale(Z_aug_cont,center = center,scale = scale_vals)
 
   list(
     Z = cbind(Z_aug_cont_scaled, Z_aug_ind),
@@ -197,11 +191,56 @@ AugmentData <- function(Z_obs, lod, center = NULL, scale_vals = NULL) {
   )
 }
 
-####### Simulation #######
+
+##### PIP functions #####
+extract_augmented_chemical_pips <- function(fit, p, sel = NULL) {
+  delta <- fit$delta
+
+  if (is.null(delta)) {
+    stop("fit$delta is not available")
+  }
+
+  if (is.null(sel)) {
+    sel <- seq_len(nrow(delta)) > nrow(delta) / 2
+  }
+
+  delta <- delta[sel, , drop = FALSE]
+
+  cont_idx <- seq_len(p)
+  ind_idx <- p + seq_len(p)
+
+  chem_pip <- vapply(seq_len(p), function(j) {
+    mean(delta[, cont_idx[j]] == 1 | delta[, ind_idx[j]] == 1)
+  }, numeric(1))
+
+  tibble::tibble(
+    chemical = seq_len(p),
+    pip = chem_pip
+  )
+}
+
+calc_sens_spec <- function(
+  pip,
+  true_active = c(TRUE, TRUE, FALSE),
+  thresholds = c(0.5, 0.75, 0.9)
+) {
+  if (is.data.frame(pip)) {
+    pip <- pip$PIP
+  }
+
+  tibble::tibble(threshold = thresholds) |>
+    dplyr::rowwise() |>
+    dplyr::mutate(
+      sensitivity = mean(pip[true_active] >= threshold),
+      specificity = mean(pip[!true_active] < threshold)
+    ) |>
+    dplyr::ungroup()
+}
+
+#### Simulation ####
 #_tr for training, _te for testing
 
-
-#### Exposure and LoD
+##### Exposure and LoD#####
 #LoD is based on quantile of true distribution
 #Alternative is to censor x% of data but not current use 
 #lod <- apply(Z_true, 2, quantile, probs = lod_quantile)
@@ -241,7 +280,7 @@ Z_obs_te <- CensorData(Z_true_te, lod)
 complete_case_idx_tr <- complete.cases(Z_obs_tr)
 complete_case_idx_te <- complete.cases(Z_obs_te)
 
-#### Response
+##### Response #####
 Z_resp_tr <- log(Z_true_tr)
 Z_resp_te <- log(Z_true_te)
 plogis_mean <- 2
@@ -272,26 +311,26 @@ y_complete_case_tr <- y_tr[complete_case_idx_tr]
 #this might not make sense for computational/time to implement
 
 
-##### A. Uncensored #####
+###### A. Uncensored ######
 Z_uncensored_tr <- Z_true_tr
 Z_uncensored_te <- Z_true_te
 
-##### B. Imputation (LoD / sqrt(2)) #####
+###### B. Imputation (LoD / sqrt(2)) ######
 Z_impute_tr <- SingleImputation(Z_obs_tr, lod)
 Z_impute_te <- SingleImputation(Z_obs_te, lod)
 
-##### C. Augmented (Indicator + Continuous) #####
+###### C. Augmented (Indicator + Continuous) ######
 aug_train <- AugmentData(Z_obs = Z_obs_tr,lod = lod)
 Z_aug_tr <- aug_train$Z
 
 aug_test <- AugmentData(Z_obs = Z_obs_te, lod = lod, center = aug_train$center, scale_vals = aug_train$scale)
 Z_aug_te <- aug_test$Z
 
-##### D. Complete case #####
+###### D. Complete case ######
 Z_complete_case_tr <- Z_uncensored_tr[complete_case_idx_tr, , drop = FALSE]
 Z_complete_case_te <- Z_uncensored_te[complete_case_idx_te, , drop = FALSE]
 
-##### E. Truncated multiple imputation using qgcomp::mice.impute.leftcenslognorm #####
+###### E. Truncated multiple imputation using qgcomp::mice.impute.leftcenslognorm ######
 mice.impute.leftcenslognorm <- qgcomp::mice.impute.leftcenslognorm
 mi_data_tr <- cbind(y_tr, Z_obs_tr) |> as.data.frame()
 mi_data_te <- cbind(y_te, Z_obs_te) |> as.data.frame()
@@ -348,20 +387,20 @@ log_obs_for_scaling_tr <- log(Z_obs_tr)
 trunc_mi_center_tr <- colMeans(log_obs_for_scaling_tr, na.rm = TRUE)
 trunc_mi_scale_tr <- apply(log_obs_for_scaling_tr, 2, sd, na.rm = TRUE)
 
-##### Scaling #####
+###### Scaling ######
 #augmented continuous scalet seperately due to the LoD adjustment
 #multiple imputation tobit also needs to be handled separately, done in prevous block
 #training scale is applied to testing scale to ensure that scaling used in training is applied to testing data
 #common scaling for all MI data sets is used to ensure that they are on the same scale for pooling results 
 
-### uncensored scaling
+####### uncensored scaling#######
 uncens_center <- colMeans(log(Z_true_tr))
 uncens_scale <- apply(log(Z_true_tr), 2, sd)
 
 Z_uncensored_tr <- scale( log(Z_true_tr), center = uncens_center, scale = uncens_scale)
 Z_uncensored_te <- scale( log(Z_true_te), center = uncens_center, scale = uncens_scale)
 
-### SI scaling
+####### SI scaling #######
 
 impute_center <- colMeans(log(Z_impute_tr))
 impute_scale <- apply(log(Z_impute_tr), 2, sd)
@@ -370,7 +409,7 @@ Z_impute_tr <- scale(log(Z_impute_tr), center = impute_center, scale = impute_sc
 Z_impute_te <- scale(log(Z_impute_te), center = impute_center, scale = impute_scale)
 
 
-### CC scaling
+####### CC scaling #######
 
 if (nrow(Z_complete_case_tr) >= 2) {
   complete_center <- colMeans(log(Z_complete_case_tr))
@@ -393,15 +432,6 @@ if (nrow(Z_complete_case_tr) >= 2) {
 
 
 ##### BKMR ##### 
-
-#create empty lists to store results for MI 
-Z_trunc_mi_list_tr <- vector("list", length = m_imputations)
-fit_trunc_mi_list_tr <- vector("list", length = m_imputations)
-pred_trunc_mi_list_tr <- vector("list", length = m_imputations)
-
-Z_trunc_mi_list_te <- vector("list", length = m_imputations)
-pred_trunc_mi_list_te <- vector("list", length = m_imputations)
-
 #used to store results by how many values are below the LoD
 #ie group 0 is all values above the LoD, which is our focus
 group_tr <- rowSums(is.na(Z_obs_tr))
@@ -414,11 +444,13 @@ group_complete_case_te <- group_te[complete_case_idx_te]
 #Model calls and MSE calculation
 
 
-##### BKMR Uncensored #####
-m_uncensored <- kmbayes(y = y_tr, Z = Z_uncensored_tr, iter = mcmc_iter)
+###### BKMR Uncensored ######
+m_uncensored <- kmbayes(y = y_tr, Z = Z_uncensored_tr, iter = mcmc_iter,varsel = TRUE)
 pred_uncensored_tr <- SamplePred(m_uncensored, Znew = Z_uncensored_tr)
 results_uncens_tr  <- mse_by_lod_count(h_true_tr, pred_uncensored_tr, group_tr, p)
 results_uncens_first2_tr  <- mse_by_first2_lod(h_true_tr, pred_uncensored_tr, Z_obs_tr)
+pip_uncensored <- ExtractPIPs(m_uncensored)
+sensspec_uncensored <- calc_sens_spec(pip_uncensored)
 
 #remove cbind(0) when adding covariates
 #need this when predicting on new data and dont have any new fixed covariates
@@ -426,39 +458,48 @@ pred_uncensored_te <- SamplePred(m_uncensored, Znew = Z_uncensored_te,Xnew = cbi
 results_uncens_te  <- mse_by_lod_count(h_true_te, pred_uncensored_te, group_te, p)
 results_uncens_first2_te  <- mse_by_first2_lod(h_true_te, pred_uncensored_te, Z_obs_te)
 
-##### BKMR Single Imputation #####
+###### BKMR Single Imputation ######
 
-m_impute <- kmbayes(y = y_tr, Z = Z_impute_tr, iter = mcmc_iter)
+m_impute <- kmbayes(y = y_tr, Z = Z_impute_tr, iter = mcmc_iter,varsel = TRUE)
 pred_impute_tr <- SamplePred(m_impute, Znew = Z_impute_tr)
 results_impute_tr <- mse_by_lod_count(h_true_tr, pred_impute_tr, group_tr, p)
 results_imputes_first2_tr <- mse_by_first2_lod(h_true_tr, pred_impute_tr, Z_obs_tr)
+pip_impute <- ExtractPIPs(m_impute)
+sensspec_impute <- calc_sens_spec(pip_impute)
 
 pred_impute_te <- SamplePred(m_impute, Znew = Z_impute_te, Xnew = cbind(0))
 results_impute_te <- mse_by_lod_count(h_true_te, pred_impute_te, group_te, p)
 results_imputes_first2_te <- mse_by_first2_lod(h_true_te, pred_impute_te, Z_obs_te)
 
 
-##### BKMR Missing Indicator Method #####
+###### BKMR Missing Indicator Method ######
 
-m_augmented <- kmbayes(y = y_tr, Z = Z_aug_tr, iter = mcmc_iter)
+
+
+m_augmented <- kmbayes(y = y_tr, Z = Z_aug_tr, iter = mcmc_iter,varsel = TRUE)
 pred_augmented_tr <- SamplePred(m_augmented, Znew = Z_aug_tr, Xnew = cbind(0))
-results_augment_tr <- mse_by_lod_count(h_true_tr, pred_augmented_tr, group_tr, p)
-results_augments_first2_tr <- mse_by_first2_lod(h_true_tr, pred_augmented_tr, Z_obs_tr)
+results_augmented_tr <- mse_by_lod_count(h_true_tr, pred_augmented_tr, group_tr, p)
+results_augmented_first2_tr <- mse_by_first2_lod(h_true_tr, pred_augmented_tr, Z_obs_tr)
 
 pred_augmented_te <- SamplePred(m_augmented, Znew = Z_aug_te, Xnew = cbind(0))
-results_augment_te <- mse_by_lod_count(h_true_te, pred_augmented_te, group_te, p)
-results_augments_first2_te <- mse_by_first2_lod(h_true_te, pred_augmented_te, Z_obs_te)
+results_augmented_te <- mse_by_lod_count(h_true_te, pred_augmented_te, group_te, p)
+results_augmented_first2_te <- mse_by_first2_lod(h_true_te, pred_augmented_te, Z_obs_te)
 
+pip_augmented <- pip_uncensored
+pip_augmented[,2] <- extract_augmented_chemical_pips(m_augmented, p = 3)$pip
+sensspec_augmented <- calc_sens_spec(pip_augmented)
 
-##### BKMR Complete Case #####
+###### BKMR Complete Case ######
 
 n_complete_tr <- nrow(Z_complete_case_tr)
 
 if (n_complete_tr >= 2) {
-  m_complete_case <- kmbayes( y = y_complete_case_tr, Z = Z_complete_case_tr, iter = mcmc_iter )
+  m_complete_case <- kmbayes( y = y_complete_case_tr, Z = Z_complete_case_tr, iter = mcmc_iter,varsel = TRUE)
   pred_complete_case_tr <- SamplePred( m_complete_case, Znew = Z_complete_case_tr)
   results_complete_case_tr <- mse_by_lod_count(h_true_tr[complete_case_idx_tr],pred_complete_case_tr,group_complete_case_tr,p)
   results_complete_cases_first2_tr <- mse_by_first2_lod( h_true_tr[complete_case_idx_tr], pred_complete_case_tr, Z_obs_tr[complete_case_idx_tr, , drop = FALSE])
+  pip_complete_case <- ExtractPIPs(m_complete_case)
+  sensspec_complete_case <- calc_sens_spec(pip_complete_case)
 
   if (nrow(Z_complete_case_te) > 0 && !is.null(m_complete_case)) {
     pred_complete_case_te <- SamplePred( m_complete_case, Znew = Z_complete_case_te, Xnew = cbind(0))
@@ -475,21 +516,43 @@ if (n_complete_tr >= 2) {
   m_complete_case <- NULL
   pred_complete_case_tr <- NULL
   pred_complete_case_te <- NULL
+
   results_complete_case_tr <- empty_mse_by_lod_count(p)
   results_complete_cases_first2_tr <- empty_mse_by_first2_lod()
   results_complete_case_te <- empty_mse_by_lod_count(p)
   results_complete_cases_first2_te <- empty_mse_by_first2_lod()
+
+  pip_complete_case <- pip_uncensored
+  pip_complete_case[,2] <- NA
+  sensspec_complete_case <- sensspec_uncensored
+  sensspec_complete_case[,2:3] <- NA
 }
 
 
-#MI model
+###### BKMR MI Tobit ######
+#create empty lists to store results for MI 
+Z_trunc_mi_list_tr <- vector("list", length = m_imputations)
+fit_trunc_mi_list_tr <- vector("list", length = m_imputations)
+pred_trunc_mi_list_tr <- vector("list", length = m_imputations)
+pip_trunc_mi_list <- vector("list", length = m_imputations)
+
+Z_trunc_mi_list_te <- vector("list", length = m_imputations)
+pred_trunc_mi_list_te <- vector("list", length = m_imputations)
+
 for (m in seq_len(m_imputations)) {
   Z_trunc_mi_list_tr[[m]] <- scale( log(Z_trunc_mi_raw_list_tr[[m]]), center = trunc_mi_center_tr, scale = trunc_mi_scale_tr)
   Z_trunc_mi_list_te[[m]] <- scale( log(Z_trunc_mi_raw_list_te[[m]]), center = trunc_mi_center_tr, scale = trunc_mi_scale_tr)
-  fit_trunc_mi_list_tr[[m]] <- kmbayes(y = y_tr,Z = Z_trunc_mi_list_tr[[m]],iter = mcmc_iter)
+  fit_trunc_mi_list_tr[[m]] <- kmbayes(y = y_tr,Z = Z_trunc_mi_list_tr[[m]],iter = mcmc_iter,varsel = TRUE)
+  pip_trunc_mi_list[[m]] <- ExtractPIPs(fit_trunc_mi_list_tr[[m]])[,2]
+
   pred_trunc_mi_list_tr[[m]] <- SamplePred(fit_trunc_mi_list_tr[[m]],Znew = Z_trunc_mi_list_tr[[m]])
   pred_trunc_mi_list_te[[m]] <- SamplePred(fit_trunc_mi_list_tr[[m]],Znew = Z_trunc_mi_list_te[[m]],Xnew = cbind(0))
 }
+
+#used to get formatting
+pip_trunc_mi <- pip_uncensored
+pip_trunc_mi[,2] <- Reduce("+", pip_trunc_mi_list) / m_imputations
+sensspec_trunc_mi <- calc_sens_spec(pip_trunc_mi)
 
 pred_trunc_mi_tr <- do.call(rbind, pred_trunc_mi_list_tr)
 pred_trunc_mi_te <- do.call(rbind, pred_trunc_mi_list_te)
@@ -499,7 +562,7 @@ results_trunc_mi_first2_tr <- mse_by_first2_lod( h_true_tr, pred_trunc_mi_tr, Z_
 results_trunc_mi_te <- mse_by_lod_count( h_true_te, pred_trunc_mi_te, group_te, p)
 results_trunc_mi_first2_te <- mse_by_first2_lod( h_true_te, pred_trunc_mi_te, Z_obs_te)
 
-########################### Results Compilation and Saving ###########################
+##### Results Compilation and Saving #####
 
 sim_results <- list(
   settings = list(
@@ -523,14 +586,14 @@ sim_results <- list(
       mse_by_lod_count = list(
         uncensored = results_uncens_tr,
         impute = results_impute_tr,
-        augment = results_augment_tr,
+        augmented = results_augmented_tr,
         complete_case = results_complete_case_tr,
         trunc_mi = results_trunc_mi_tr
       ),
       mse_by_first2_lod = list(
         uncensored = results_uncens_first2_tr,
         impute = results_imputes_first2_tr,
-        augment = results_augments_first2_tr,
+        augmented = results_augmented_first2_tr,
         complete_case = results_complete_cases_first2_tr,
         trunc_mi = results_trunc_mi_first2_tr
       )
@@ -539,17 +602,31 @@ sim_results <- list(
       mse_by_lod_count = list(
         uncensored = results_uncens_te,
         impute = results_impute_te,
-        augment = results_augment_te,
+        augmented = results_augmented_te,
         complete_case = results_complete_case_te,
         trunc_mi = results_trunc_mi_te
       ),
       mse_by_first2_lod = list(
         uncensored = results_uncens_first2_te,
         impute = results_imputes_first2_te,
-        augment = results_augments_first2_te,
+        augmented = results_augmented_first2_te,
         complete_case = results_complete_cases_first2_te,
         trunc_mi = results_trunc_mi_first2_te
       )
+    ),
+    pips = list(
+      uncensored = pip_uncensored,
+      impute = pip_impute,
+      augmented = pip_augmented,
+      complete_case = pip_complete_case,
+      trunc_mi = pip_trunc_mi
+    ),
+    sensspec = list(
+      uncensored = sensspec_uncensored,
+      impute = sensspec_impute,
+      augmented = sensspec_augmented,
+      complete_case = sensspec_complete_case,
+      trunc_mi = sensspec_trunc_mi
     )
   )
 )

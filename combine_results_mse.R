@@ -1,3 +1,5 @@
+library(dplyr)
+library(purrr)
 library(tibble)
 library(tidyr)
 
@@ -21,46 +23,79 @@ read_sim_result <- function(path) {
 
   metadata_tbl <- bind_cols(settings_tbl, logistics_tbl)
 
-  split_results <- imap_dfr(
-    sim_result$results,
+  mse_by_lod_count <- imap_dfr(
+    sim_result$results[c("training", "testing")],
     \(split_obj, split_name) {
-      mse_by_lod_count <- imap_dfr(
+      imap_dfr(
         split_obj$mse_by_lod_count,
         \(result_tbl, method) {
-          out <- as_tibble(result_tbl) |>
-            mutate(
-              split = split_name,
-              method = method
-            )
-
-          bind_cols(metadata_tbl, out)
+          bind_cols(
+            metadata_tbl,
+            as_tibble(result_tbl) |>
+              mutate(
+                split = split_name,
+                method = method
+              )
+          )
         }
       )
+    }
+  )
 
-      mse_by_first2_lod <- imap_dfr(
+  mse_by_first2_lod <- imap_dfr(
+    sim_result$results[c("training", "testing")],
+    \(split_obj, split_name) {
+      imap_dfr(
         split_obj$mse_by_first2_lod,
         \(result_tbl, method) {
-          out <- as_tibble(result_tbl) |>
-            mutate(
-              split = split_name,
-              method = method
-            )
-
-          bind_cols(metadata_tbl, out)
+          bind_cols(
+            metadata_tbl,
+            as_tibble(result_tbl) |>
+              mutate(
+                split = split_name,
+                method = method
+              )
+          )
         }
       )
+    }
+  )
 
-      list(
-        mse_by_lod_count = mse_by_lod_count,
-        mse_by_first2_lod = mse_by_first2_lod
+  sensspec <- imap_dfr(
+    sim_result$results$sensspec,
+    \(result_tbl, method) {
+      bind_cols(
+        metadata_tbl,
+        as_tibble(result_tbl) |>
+          mutate(method = method)
+      )
+    }
+  )
+
+  pips <- imap_dfr(
+    sim_result$results$pips,
+    \(result_tbl, method) {
+      out <- as_tibble(result_tbl)
+
+      if ("chemical" %in% names(out) && "pip" %in% names(out)) {
+        out <- out |>
+          rename(PIP = pip)
+      }
+
+      bind_cols(
+        metadata_tbl,
+        out |>
+          mutate(method = method)
       )
     }
   )
 
   list(
     file_metadata = metadata_tbl,
-    mse_by_lod_count = map_dfr(split_results$mse_by_lod_count, identity),
-    mse_by_first2_lod = map_dfr(split_results$mse_by_first2_lod, identity)
+    mse_by_lod_count = mse_by_lod_count,
+    mse_by_first2_lod = mse_by_first2_lod,
+    sensspec = sensspec,
+    pips = pips
   )
 }
 
@@ -71,7 +106,7 @@ pool_mse <- function(data, group_cols) {
     summarize(
       runs = n_distinct(seed),
       total_n_obs = sum(n_obs, na.rm = TRUE),
-      pooled_mse = sum(sse, na.rm = TRUE) / total_n_obs,
+      pooled_mse = sqrt(sum(sse, na.rm = TRUE) / total_n_obs),
       .groups = "drop"
     ) |>
     arrange(across(all_of(group_cols)))
@@ -89,12 +124,35 @@ pool_logistics <- function(data, group_cols) {
     arrange(across(all_of(group_cols)))
 }
 
+pool_sensspec <- function(data, group_cols) {
+  data |>
+    group_by(across(all_of(group_cols))) |>
+    summarize(
+      runs = n_distinct(seed),
+      mean_sensitivity = mean(sensitivity, na.rm = TRUE),
+      mean_specificity = mean(specificity, na.rm = TRUE),
+      .groups = "drop"
+    ) |>
+    arrange(across(all_of(group_cols)))
+}
+
 pivot_pooled_mse_wider <- function(data) {
   data |>
     pivot_wider(
+      id_cols = c(n, n_te, p, lod_quantile, exposure_dist, h_dist, mcmc_iter, split, group),
       names_from = method,
       values_from = pooled_mse,
       names_prefix = "pooled_mse_"
+    )
+}
+
+pivot_sensspec_wider <- function(data) {
+  data |>
+    pivot_wider(
+      id_cols = c(n, n_te, p, lod_quantile, exposure_dist, h_dist, mcmc_iter, threshold),
+      names_from = method,
+      values_from = c(mean_sensitivity, mean_specificity),
+      names_sep = "_"
     )
 }
 
@@ -103,6 +161,8 @@ combined_raw <- map(result_files, read_sim_result)
 combined_file_metadata <- map_dfr(combined_raw, "file_metadata")
 combined_mse_by_lod_count <- map_dfr(combined_raw, "mse_by_lod_count")
 combined_mse_by_first2_lod <- map_dfr(combined_raw, "mse_by_first2_lod")
+combined_sensspec <- map_dfr(combined_raw, "sensspec")
+combined_pips <- map_dfr(combined_raw, "pips")
 
 scenario_cols <- c(
   "n",
@@ -126,50 +186,70 @@ mse_by_first2_lod_summary <- pool_mse(
 ) |>
   pivot_pooled_mse_wider()
 
+sensspec_summary_long <- pool_sensspec(
+  combined_sensspec,
+  c(scenario_cols, "method", "threshold")
+)
+
+sensspec_summary <- sensspec_summary_long |>
+  pivot_sensspec_wider()
 
 logistics_summary <- pool_logistics(
   combined_file_metadata,
   scenario_cols
 )
 
-logistics_summary
-
-logistics_summary |>
-  dplyr::summarise(
-    max_max_run_time = max(max_run_time, na.rm = TRUE),
-    .by = n
+runs_by_method <- pool_mse(
+  combined_mse_by_lod_count |>
+    filter(method != "complete_case"),
+  c(scenario_cols, "split", "method", "group")
+) |>
+  select(
+    n,
+    n_te,
+    lod_quantile,
+    exposure_dist,
+    h_dist,
+    split,
+    method,
+    group,
+    runs
   )
 
 combined_results <- list(
   files = combined_file_metadata,
   combined_mse_by_lod_count = combined_mse_by_lod_count,
   combined_mse_by_first2_lod = combined_mse_by_first2_lod,
+  combined_sensspec = combined_sensspec,
+  combined_pips = combined_pips,
   mse_by_lod_count_summary = mse_by_lod_count_summary,
-  mse_by_first2_lod_summary = mse_by_first2_lod_summary
+  mse_by_first2_lod_summary = mse_by_first2_lod_summary,
+  sensspec_summary_long = sensspec_summary_long,
+  sensspec_summary = sensspec_summary,
+  logistics_summary = logistics_summary,
+  runs_by_method = runs_by_method
 )
 
 
-# process_df <- combined_results$mse_by_first2_lod_summary |> 
-#   select(n,lod_quantile,exposure_dist,h_dist,group,pooled_mse_uncensored, pooled_mse_impute, pooled_mse_augment)
-
-process_df <- combined_results$mse_by_lod_count_summary |> 
+process_df <- combined_results$mse_by_first2_lod_summary |> 
   filter(
-    split == "testing",
-    group == "0"
+    split == "training",
+    # group == "-+" | group == "+-"
+    group == "++",
+    lod_quantile < 0.9
   ) |>
   select(
-    split,
     n,
-    n_te,
     lod_quantile,
     exposure_dist,
     h_dist,
+    # group,
     any_of(c(
       "pooled_mse_uncensored",
       "pooled_mse_impute",
       "pooled_mse_augment",
-      "pooled_mse_trunc_mi",
-      "pooled_mse_complete_case"
+      "pooled_mse_trunc_mi"
+      # "pooled_mse_complete_case"
     ))
   )
 
@@ -181,6 +261,7 @@ library(looplot)
 plot_data = nested_loop_base_data(
     process_df, 
     x = "lod_quantile", steps = c("n"),
+    # x = "lod_quantile", steps = c("n","group"),
     grid_cols = "exposure_dist", grid_rows = "h_dist",
     spu_x_shift = .2
 )
@@ -225,3 +306,16 @@ p = add_processing(
     )
 )
 print(p)
+
+
+sens_plot_df <- combined_results$sensspec_summary_long |>
+  select(
+    n,
+    lod_quantile,
+    exposure_dist,
+    h_dist,
+    threshold,
+    method,
+    mean_sensitivity,
+    mean_specificity
+  )
