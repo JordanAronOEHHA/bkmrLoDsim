@@ -202,7 +202,7 @@ logistics_summary <- pool_logistics(
 runs_by_method <- pool_mse(
   combined_mse_by_lod_count |>
     filter(method != "complete_case"),
-  c(scenario_cols, "split", "method", "group")
+  c(scenario_cols)
 ) |>
   select(
     n,
@@ -210,9 +210,6 @@ runs_by_method <- pool_mse(
     lod_quantile,
     exposure_dist,
     h_dist,
-    split,
-    method,
-    group,
     runs
   )
 
@@ -247,7 +244,7 @@ process_df <- combined_results$mse_by_first2_lod_summary |>
     any_of(c(
       "pooled_mse_uncensored",
       "pooled_mse_impute",
-      "pooled_mse_augment",
+      "pooled_mse_augmented",
       "pooled_mse_trunc_mi"
       # "pooled_mse_complete_case"
     ))
@@ -269,7 +266,7 @@ plot_data = nested_loop_base_data(
 p = nested_loop_base_plot(
     plot_data,
     x_name = "Detection Limit Quantile",
-    y_name = "MSE", 
+    y_name = "RMSE", 
     colors = scales::viridis_pal(end = .85, option = "A"),
     grid_scales = "free_y"
 )
@@ -306,8 +303,11 @@ p = add_processing(
     )
 )
 print(p)
+ggsave("RMSE.png",width = 10,height = 10)
 
+##############################
 
+# R
 sens_plot_df <- combined_results$sensspec_summary_long |>
   select(
     n,
@@ -318,4 +318,84 @@ sens_plot_df <- combined_results$sensspec_summary_long |>
     method,
     mean_sensitivity,
     mean_specificity
+  ) |>
+  pivot_longer(
+    cols = c(mean_sensitivity, mean_specificity),
+    names_to = "metric",
+    values_to = "value"
+  ) |>
+  mutate(
+    metric = recode(
+      metric,
+      mean_sensitivity = "sensitivity",
+      mean_specificity = "specificity"
+    )
+  ) |>
+  pivot_wider(
+    names_from = method,
+    values_from = value
   )
+
+
+sens_plot_df <- sens_plot_df |> filter(metric=="specificity") |> select(
+  # n,
+  lod_quantile,
+  exposure_dist,
+  h_dist,
+  # metric,
+  threshold,
+  uncensored,
+  impute,
+  augmented,
+  trunc_mi
+) 
+
+plot_data = nested_loop_base_data(
+    sens_plot_df, 
+    x = "lod_quantile", steps = c("threshold"),
+    grid_cols = "exposure_dist", grid_rows = "h_dist",
+    spu_x_shift = .2
+)
+
+p = nested_loop_base_plot(
+    plot_data,
+    x_name = "Detection Limit Quantile",
+    y_name = "Specificity", 
+    colors = scales::viridis_pal(end = .85, option = "A")
+)
+
+plot_data = nested_loop_paramsteps_data(
+    plot_data,
+    steps_y_base = -.2,
+    steps_y_height = .2
+)
+
+p = nested_loop_paramsteps_plot(
+    p, plot_data, 
+    steps_values_annotate = TRUE, 
+    steps_annotation_size = 5
+)
+
+p = add_processing(
+    p, 
+    list(
+        # set limits
+        adjust_ylim = list(
+            y_expand_add = c(.25, NULL)
+        ),
+        # adjust theme
+        add_custom_theme = list(
+            axis.text.x = element_text(angle = 0, 
+                                       vjust = 0.5, 
+                                       size = 8)
+        )
+        # add horizontal lines
+        # add_abline = list(
+        #     intercept = 0
+        # )
+    )
+)
+print(p)
+ggsave("Specificity.png",width = 10,height = 10)
+
+
