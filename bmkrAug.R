@@ -1,3 +1,7 @@
+#TODO add fixed effects 
+##TODO add FE to MI 
+
+
 start_time <- Sys.time()
 
 library(bkmr)
@@ -24,7 +28,7 @@ set.seed(seed)
 # Defaults 
 n <- 300
 n_te <- n
-lod_quantile <- 0.1
+lod_quantile <- 0.25
 exposure_dist <- "lnorm" # Options: lnorm unif gamma
 h_dist <- "nonlinear" # Options: linear nonlinear
 
@@ -87,7 +91,6 @@ mse_by_lod_count <- function(h_true, pred, group, p_val = NULL) {
 
   dplyr::bind_rows(results, total_row)
 }
-
 
 mse_by_first2_lod <- function(h_true, pred, Z_obs) {
   z1_below <- is.na(Z_obs[, 1])
@@ -209,13 +212,18 @@ extract_augmented_chemical_pips <- function(fit, p, sel = NULL) {
   cont_idx <- seq_len(p)
   ind_idx <- p + seq_len(p)
 
-  chem_pip <- vapply(seq_len(p), function(j) {
+  chem_pip_and <- vapply(seq_len(p), function(j) {
+    mean(delta[, cont_idx[j]] == 1 & delta[, ind_idx[j]] == 1)
+  }, numeric(1))
+
+  chem_pip_or <- vapply(seq_len(p), function(j) {
     mean(delta[, cont_idx[j]] == 1 | delta[, ind_idx[j]] == 1)
   }, numeric(1))
 
   tibble::tibble(
     chemical = seq_len(p),
-    pip = chem_pip
+    pip_and = chem_pip_and,
+    pip_or = chem_pip_or
   )
 }
 
@@ -281,16 +289,23 @@ complete_case_idx_tr <- complete.cases(Z_obs_tr)
 complete_case_idx_te <- complete.cases(Z_obs_te)
 
 ##### Response #####
-Z_resp_tr <- log(Z_true_tr)
-Z_resp_te <- log(Z_true_te)
+
 plogis_mean <- 2
 
 if (h_dist == "nonlinear") {
+  Z_resp_tr <- log(Z_true_tr)
+  Z_resp_te <- log(Z_true_te)
+  
   h_true_tr <- 4 * plogis(1/4 * (Z_resp_tr[,1] + Z_resp_tr[,2] + 1/2 * (Z_resp_tr[,1]) * (Z_resp_tr[,2])), location = plogis_mean, scale = 0.5)
   h_true_te <- 4 * plogis(1/4 * (Z_resp_te[,1] + Z_resp_te[,2] + 1/2 * (Z_resp_te[,1]) * (Z_resp_te[,2])), location = plogis_mean, scale = 0.5)
 } else if (h_dist == "linear") {
-  h_true_tr <- Z_resp_tr[, 1] + Z_resp_tr[, 2] + 0.5 * Z_resp_tr[, 1] * Z_resp_tr[, 2]
-  h_true_te <- Z_resp_te[, 1] + Z_resp_te[, 2] + 0.5 * Z_resp_te[, 1] * Z_resp_te[, 2]
+  # h_true_tr <- Z_resp_tr[, 1] + Z_resp_tr[, 2] + 0.5 * Z_resp_tr[, 1] * Z_resp_tr[, 2]
+  # h_true_te <- Z_resp_te[, 1] + Z_resp_te[, 2] + 0.5 * Z_resp_te[, 1] * Z_resp_te[, 2]
+  Z_resp_tr <- log(Z_true_tr) * (Z_true_tr>lod)
+  Z_resp_te <- log(Z_true_te) * (Z_true_te>lod)
+
+  h_true_tr <- 4 * plogis(1/4 * (Z_resp_tr[,1] + Z_resp_tr[,2] + 1/2 * (Z_resp_tr[,1]) * (Z_resp_tr[,2])), location = plogis_mean, scale = 0.5)
+  h_true_te <- 4 * plogis(1/4 * (Z_resp_te[,1] + Z_resp_te[,2] + 1/2 * (Z_resp_te[,1]) * (Z_resp_te[,2])), location = plogis_mean, scale = 0.5)
 } else {
   stop("h_dist must be 'linear' or 'nonlinear'")
 }
@@ -305,8 +320,8 @@ y_complete_case_tr <- y_tr[complete_case_idx_tr]
 # B. Imputation (LoD / sqrt(2))
 # C. Augmented (Indicator + Continuous)
 # D. Complete case
-# E. Truncated MI (tobit lognormal?)
-# TODO
+# E. Truncated MI (tobit lognormal)
+# TODO?
 # F. Pseudo-Gibbs (Carli et al) ie. impute using gibbs in each MCMC iteration 
 #this might not make sense for computational/time to implement
 
@@ -485,9 +500,16 @@ pred_augmented_te <- SamplePred(m_augmented, Znew = Z_aug_te, Xnew = cbind(0))
 results_augmented_te <- mse_by_lod_count(h_true_te, pred_augmented_te, group_te, p)
 results_augmented_first2_te <- mse_by_first2_lod(h_true_te, pred_augmented_te, Z_obs_te)
 
-pip_augmented <- pip_uncensored
-pip_augmented[,2] <- extract_augmented_chemical_pips(m_augmented, p = 3)$pip
-sensspec_augmented <- calc_sens_spec(pip_augmented)
+
+augmented_pips <- extract_augmented_chemical_pips(m_augmented, p = 3)
+
+pip_augmented_and <- pip_uncensored
+pip_augmented_and[,2] <- augmented_pips$pip_and
+sensspec_augmented_and <- calc_sens_spec(pip_augmented_and)
+
+pip_augmented_or <- pip_uncensored
+pip_augmented_or[,2] <- augmented_pips$pip_or
+sensspec_augmented_or <- calc_sens_spec(pip_augmented_or)
 
 ###### BKMR Complete Case ######
 
@@ -617,14 +639,16 @@ sim_results <- list(
     pips = list(
       uncensored = pip_uncensored,
       impute = pip_impute,
-      augmented = pip_augmented,
+      augmented_and = pip_augmented_and,
+      augmented_or = pip_augmented_or,
       complete_case = pip_complete_case,
       trunc_mi = pip_trunc_mi
     ),
     sensspec = list(
       uncensored = sensspec_uncensored,
       impute = sensspec_impute,
-      augmented = sensspec_augmented,
+      augmented_and = sensspec_augmented_and,
+      augmented_or = sensspec_augmented_or,
       complete_case = sensspec_complete_case,
       trunc_mi = sensspec_trunc_mi
     )
