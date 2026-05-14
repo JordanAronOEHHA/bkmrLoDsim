@@ -10,13 +10,13 @@
 n=$1
 lod_quantile=$2
 exposure_dist=$3
-h_dist=$4
+mean_offset=$4
 date
 path="/projects/standard/mfiecas/aron0064/bkmrLoDsim"
 cd $path/Routputs
 start_time=$(date +%s)
 module load R/4.4.0-openblas-rocky8
-Rscript $path/Rcode/bmkrAug.R $n $lod_quantile $exposure_dist $h_dist
+Rscript $path/Rcode/bmkrAug.R $n $lod_quantile $exposure_dist $mean_offset
 finish_time=$(date +%s)
 elapsed_time=$((finish_time  - start_time))
 

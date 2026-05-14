@@ -17,7 +17,7 @@ library(qgcomp)
 seed <- as.numeric(Sys.getenv('SLURM_ARRAY_TASK_ID'))
 if (is.na(seed)){
   seed <- 999999
-  mcmc_iter <- 100
+  mcmc_iter <- 10
 } else {
   mcmc_iter <- 10000
 }
@@ -26,18 +26,18 @@ set.seed(seed)
 
 ##### Control Parameters #####
 # Defaults 
-n <- 300
+n <- 400
 n_te <- n
 lod_quantile <- 0.25
 exposure_dist <- "lnorm" # Options: lnorm unif gamma
-h_dist <- "nonlinear" # Options: linear nonlinear
+mean_offset <- 0
 
 # Command line arguments (override defaults if included)
 args <- commandArgs(TRUE)
 if (length(args) >= 1) n <- as.numeric(args[1])
 if (length(args) >= 2) lod_quantile <- as.numeric(args[2])
 if (length(args) >= 3) exposure_dist <- args[3]
-if (length(args) >= 4) h_dist <- args[4]
+if (length(args) >= 5) mean_offset <- args[4]
 
 #prints out current settings for reference when looking at results
 print("Simulation Settings:")
@@ -45,10 +45,10 @@ print(paste("seed:", seed))
 print(paste("n:", n))
 print(paste("lod_quantile:", lod_quantile))
 print(paste("exposure_dist:", exposure_dist))
-print(paste("h_dist:", h_dist))
+print(paste("mean_offset:", mean_offset))
 
 ##### Hyper Parameters #####
-p <- 3
+p <- 4
 
 #number of completed datasets
 m_imputations <- 5
@@ -253,7 +253,7 @@ calc_sens_spec <- function(
 #Alternative is to censor x% of data but not current use 
 #lod <- apply(Z_true, 2, quantile, probs = lod_quantile)
 if (exposure_dist == "lnorm") {
-  norm1 <- 2
+  norm1 <- 3
   norm2 <- 1
   Z_true_tr <- matrix(exp(rnorm(n * p,mean = norm1,sd = norm2)), ncol = p)
   Z_true_te <- matrix(exp(rnorm(n_te * p,mean = norm1,sd = norm2)), ncol = p)
@@ -262,17 +262,17 @@ if (exposure_dist == "lnorm") {
 
 } else if (exposure_dist == "unif") {
   unif1 = 0
-  unif2 = 4
-  Z_true_tr <- matrix(exp(runif(n * p, min = 0, max = 4)), ncol = p)
-  Z_true_te <- matrix(exp(runif(n_te * p, min = 0, max = 4)), ncol = p)
+  unif2 = 6
+  Z_true_tr <- matrix(exp(runif(n * p, min = unif1, max = unif2)), ncol = p)
+  Z_true_te <- matrix(exp(runif(n_te * p, min = unif1, max = unif2)), ncol = p)
   lod <- exp(qunif(lod_quantile, min = unif1, max = unif2))
   lod <- rep(lod, p)
 
 } else if (exposure_dist == "gamma") {
   gamma1 = 2
   gamma2 = 1
-  Z_true_tr <- matrix(exp(rgamma(n * p, shape = 2, scale = 1)), ncol = p)
-  Z_true_te <- matrix(exp(rgamma(n_te * p, shape = 2, scale = 1)), ncol = p)
+  Z_true_tr <- matrix(exp(rgamma(n * p, shape = gamma1, scale = gamma2)), ncol = p)
+  Z_true_te <- matrix(exp(rgamma(n_te * p, shape = gamma1, scale = gamma2)), ncol = p)
   lod <- exp(qgamma(lod_quantile, shape = gamma1, scale = gamma2))
   lod <- rep(lod, p)
   
@@ -290,25 +290,13 @@ complete_case_idx_te <- complete.cases(Z_obs_te)
 
 ##### Response #####
 
-plogis_mean <- 2
+plogis_mean <- 3 + mean_offset
 
-if (h_dist == "nonlinear") {
-  Z_resp_tr <- log(Z_true_tr)
-  Z_resp_te <- log(Z_true_te)
-  
-  h_true_tr <- 4 * plogis(1/4 * (Z_resp_tr[,1] + Z_resp_tr[,2] + 1/2 * (Z_resp_tr[,1]) * (Z_resp_tr[,2])), location = plogis_mean, scale = 0.5)
-  h_true_te <- 4 * plogis(1/4 * (Z_resp_te[,1] + Z_resp_te[,2] + 1/2 * (Z_resp_te[,1]) * (Z_resp_te[,2])), location = plogis_mean, scale = 0.5)
-} else if (h_dist == "linear") {
-  # h_true_tr <- Z_resp_tr[, 1] + Z_resp_tr[, 2] + 0.5 * Z_resp_tr[, 1] * Z_resp_tr[, 2]
-  # h_true_te <- Z_resp_te[, 1] + Z_resp_te[, 2] + 0.5 * Z_resp_te[, 1] * Z_resp_te[, 2]
-  Z_resp_tr <- log(Z_true_tr) * (Z_true_tr>lod)
-  Z_resp_te <- log(Z_true_te) * (Z_true_te>lod)
+Z_resp_tr <- log(Z_true_tr)
+Z_resp_te <- log(Z_true_te)
 
-  h_true_tr <- 4 * plogis(1/4 * (Z_resp_tr[,1] + Z_resp_tr[,2] + 1/2 * (Z_resp_tr[,1]) * (Z_resp_tr[,2])), location = plogis_mean, scale = 0.5)
-  h_true_te <- 4 * plogis(1/4 * (Z_resp_te[,1] + Z_resp_te[,2] + 1/2 * (Z_resp_te[,1]) * (Z_resp_te[,2])), location = plogis_mean, scale = 0.5)
-} else {
-  stop("h_dist must be 'linear' or 'nonlinear'")
-}
+h_true_tr <- 4 * plogis(1/4 * (Z_resp_tr[,1] + Z_resp_tr[,2] + 1/2 * (Z_resp_tr[,1]) * (Z_resp_tr[,2])), location = plogis_mean, scale = 0.5)
+h_true_te <- 4 * plogis(1/4 * (Z_resp_te[,1] + Z_resp_te[,2] + 1/2 * (Z_resp_te[,1]) * (Z_resp_te[,2])), location = plogis_mean, scale = 0.5)
 
 y_tr <- h_true_tr + rnorm(n, sd = 1)
 y_te <- h_true_te + rnorm(n_te, sd = 1)
@@ -501,7 +489,7 @@ results_augmented_te <- mse_by_lod_count(h_true_te, pred_augmented_te, group_te,
 results_augmented_first2_te <- mse_by_first2_lod(h_true_te, pred_augmented_te, Z_obs_te)
 
 
-augmented_pips <- extract_augmented_chemical_pips(m_augmented, p = 3)
+augmented_pips <- extract_augmented_chemical_pips(m_augmented, p = 4)
 
 pip_augmented_and <- pip_uncensored
 pip_augmented_and[,2] <- augmented_pips$pip_and
@@ -594,7 +582,7 @@ sim_results <- list(
     p = p,
     lod_quantile = lod_quantile,
     exposure_dist = exposure_dist,
-    h_dist = h_dist,
+    mean_offset = mean_offset,
     mcmc_iter = mcmc_iter,
     m_imputations = m_imputations,
     mi_maxit = mi_maxit
@@ -660,8 +648,21 @@ name <- paste0(
   "_n", n,
   "_lod", lod_quantile,
   "_", exposure_dist,
-  "_", h_dist,
+  "_", mean_offset,
   ".rds"
 )
 
 saveRDS(sim_results, file = name)
+
+
+
+
+
+
+
+
+
+
+
+
+
