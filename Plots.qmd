@@ -1,0 +1,153 @@
+---
+title: "Untitled"
+format: html
+---
+
+```{r}
+# norm1 <- 2
+# norm2 <- 1
+# Z_true_tr <- matrix(exp(rnorm(n * p,mean = norm1,sd = norm2)), ncol = p)
+# Z_true_tr <- matrix(exp(rnorm(n * p * 100,mean = norm1,sd = norm2)), ncol = p)
+# lod <- exp(qnorm(lod_quantile, mean = norm1, sd = norm2))
+# lod <- rep(lod, p)
+
+# Z_obs_tr <- CensorData(Z_true_tr, lod)
+# lod_mat <- is.na(Z_obs_tr)
+# Z_resp_tr <- log(Z_true_tr)
+
+# Z_obs_plot <- Z_obs_tr
+# Z_obs_plot[is.na(Z_obs_plot)] <- lod[1]
+
+# plogis_mean <- 4
+# h_true_tr <- 4 * plogis(1/4 * (Z_resp_tr[,1] + Z_resp_tr[,2] + 1/2 * (Z_resp_tr[,1]) * (Z_resp_tr[,2])), location = plogis_mean, scale = 0.5)
+
+
+# library(ggplot2)
+# df <- data.frame(x = log(Z_obs_plot)[,1],y = log(Z_obs_plot)[,2],z = h_true_tr)
+# df <- data.frame(x = Z_resp_tr[,1],y = Z_resp_tr[,2],z = h_true_tr)
+
+# ggplot(df, aes(x = x, y = y)) + geom_point(aes(color = z)) + 
+#   geom_hline(yintercept = log(lod[1]),colour="red", linetype = "longdash") + 
+#   geom_vline(xintercept = log(lod[1]),colour="red", linetype = "longdash")
+
+
+
+# var(h_true_tr[(lod_mat[,1] | lod_mat[,2])])
+# var(h_true_tr[!(lod_mat[,1] | lod_mat[,2])])
+
+# var(h_true_tr[(lod_mat[,1] | lod_mat[,2])]) / var(h_true_tr)
+# var(h_true_tr[(lod_mat[,1] | lod_mat[,2])]) / var(h_true_tr[!(lod_mat[,1] | lod_mat[,2])])
+
+# var(h_true_tr[group_tr > 0])
+# var(h_true_tr[group_tr == 0])
+
+
+
+###################
+library(ggside)
+
+dnorm_shaded <- function(x, lod) {
+  y <- dnorm(x, mean = 2, sd = 1)
+  y[x > lod] <- NA  # Mask values greater than 2
+  return(y)
+}
+
+dunif_shaded <- function(x,lod) {
+  y <- dunif(x,min = 0, max = 4)
+  y[x > lod] <- NA
+  return(y)
+}
+
+dgamma_shaded <- function(x,lod) {
+  y <- dgamma(x, shape = 2, scale = 1)
+  y[x > lod] <- NA
+  return(y)
+}
+
+
+
+library(ggplot2)
+library(ggside)
+library(dplyr)
+
+# 1. Define the parameters and the Marker Lookup Table
+lods <- c(0.25, 0.5, 0.75)
+side_colors <- c("#9c179e","#ed7953")
+
+# This table links the facet's LOD value to the specific marker for each distribution
+marker_lookup <- data.frame(
+  lod_vis = lods,
+  m_norm  = qnorm(lods,3,1),
+  m_unif  = qunif(lods,0,6)
+#   m_gamma = c(0.9612788, 1.678347, 2.692635)
+)
+
+# 2. Create the grid and join the marker values
+z1 <- seq(0, 6, length = 60)
+z2 <- seq(0, 6, length = 60)
+locations <- 3 + c(-1, 0, 1)
+
+grid_all <- expand.grid(Z1 = z1, Z2 = z2, loc_val = locations, lod_vis = lods) %>%
+  mutate(
+    eta = 1/4 * (Z1 + Z2 + 1/2 * Z1 * Z2),
+    resp = plogis(eta, location = loc_val, scale = 0.5),
+    loc_lab = paste("Location:", loc_val),
+    lod_lab = paste("LOD:", round(lod_vis, 2))
+  ) %>%
+  left_join(marker_lookup, by = "lod_vis") # Adds the specific markers to every row
+
+# 3. Build the plot
+ggplot(grid_all, aes(x = Z1, y = Z2, z = resp)) +
+  geom_contour_filled(breaks = seq(0, 1, .025)) +
+  
+  # Reference lines in main plot (white)
+  geom_hline(aes(yintercept = m_norm), linetype = "dashed", color = side_colors[1]) + 
+  geom_hline(aes(yintercept = m_unif), linetype = "dashed", color = side_colors[2]) + 
+#   geom_hline(aes(yintercept = m_gamma), linetype = "dashed", color = side_colors[3]) + 
+
+  geom_vline(aes(xintercept = m_norm), linetype = "dashed", color = side_colors[1]) + 
+  geom_vline(aes(xintercept = m_unif), linetype = "dashed", color = side_colors[2]) + 
+#   geom_vline(aes(xintercept = m_gamma), linetype = "dashed", color = side_colors[3]) + 
+  
+  
+  facet_grid(lod_lab ~ loc_lab) +
+  
+  # --- Marginal Functions ---
+  geom_xsidefunction(fun = dnorm, args = list(mean = 3, sd = 1), color = side_colors[1], linewidth = 1) + 
+  geom_xsidefunction(fun = dunif, args = list(min = 0, max = 6), color = side_colors[2], linewidth = 1) + 
+#   geom_xsidefunction(fun = dgamma, args = list(shape = 2, scale = 1), color = side_colors[3], linewidth = 1) + 
+  
+  geom_ysidefunction(fun = dnorm, args = list(mean = 3, sd = 1), color = side_colors[1], linewidth = 1) + 
+  geom_ysidefunction(fun = dunif, args = list(min = 0, max = 6), color = side_colors[2], linewidth = 1) + 
+#   geom_ysidefunction(fun = dgamma, args = list(shape = 2, scale = 1), color = side_colors[3], linewidth = 1) + 
+  
+
+  # --- Distribution Markers (Mapping to the joined columns) ---
+  # These will now respect the facet because they are part of the main data mapping
+  geom_xsidesegment(aes(x = m_norm, xend = m_norm, y = 0, yend = Inf), 
+                    color = side_colors[1], linetype = "dashed") +
+  geom_xsidesegment(aes(x = m_unif, xend = m_unif, y = 0, yend = Inf), 
+                    color = side_colors[2], linetype = "dashed") +
+#   geom_xsidesegment(aes(x = m_gamma, xend = m_gamma, y = 0, yend = Inf), 
+#                     color = side_colors[3], linetype = "dashed") +
+
+  geom_ysidesegment(aes(y = m_norm, yend = m_norm, x = 0, xend = Inf), 
+                    color = side_colors[1], linetype = "dashed") +
+  geom_ysidesegment(aes(y = m_unif, yend = m_unif, x = 0, xend = Inf), 
+                    color = side_colors[2], linetype = "dashed") +
+#   geom_ysidesegment(aes(y = m_gamma, yend = m_gamma, x = 0, xend = Inf), 
+#                     color = side_colors[3], linetype = "dashed") +
+  
+
+  theme_minimal() + 
+  theme_ggside_minimal() + 
+  ggside(collapse = "y") + # Note: x-side markers will still "stack" if collapsed
+  theme(ggside.panel.scale.y = .2,
+        ggside.panel.scale.x = .2,
+        legend.position = "none")
+
+
+ggsave("test.png",height = 10, width = 10)
+
+
+```
