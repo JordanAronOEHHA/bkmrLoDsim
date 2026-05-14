@@ -139,7 +139,7 @@ pool_sensspec <- function(data, group_cols) {
 pivot_pooled_mse_wider <- function(data) {
   data |>
     pivot_wider(
-      id_cols = c(n, n_te, p, lod_quantile, exposure_dist, h_dist, mcmc_iter, split, group),
+      id_cols = c(n, n_te, p, lod_quantile, exposure_dist, mean_offset, mcmc_iter, split, group),
       names_from = method,
       values_from = pooled_mse,
       names_prefix = "pooled_mse_"
@@ -149,7 +149,7 @@ pivot_pooled_mse_wider <- function(data) {
 pivot_sensspec_wider <- function(data) {
   data |>
     pivot_wider(
-      id_cols = c(n, n_te, p, lod_quantile, exposure_dist, h_dist, mcmc_iter, threshold),
+      id_cols = c(n, n_te, p, lod_quantile, exposure_dist, mean_offset, mcmc_iter, threshold),
       names_from = method,
       values_from = c(mean_sensitivity, mean_specificity),
       names_sep = "_"
@@ -170,7 +170,7 @@ scenario_cols <- c(
   "p",
   "lod_quantile",
   "exposure_dist",
-  "h_dist",
+  "mean_offset",
   "mcmc_iter"
 )
 
@@ -194,9 +194,17 @@ sensspec_summary_long <- pool_sensspec(
 sensspec_summary <- sensspec_summary_long |>
   pivot_sensspec_wider()
 
+
 logistics_summary <- pool_logistics(
   combined_file_metadata,
   scenario_cols
+)
+
+logistics_summary |> 
+  group_by(n) |> 
+  summarize(
+    max_run_time = max(max_run_time, na.rm = TRUE),
+    max_run_mem = max(max_run_mem, na.rm = TRUE)
 )
 
 runs_by_method <- pool_mse(
@@ -209,7 +217,7 @@ runs_by_method <- pool_mse(
     n_te,
     lod_quantile,
     exposure_dist,
-    h_dist,
+    mean_offset,
     runs
   )
 
@@ -222,25 +230,25 @@ combined_results <- list(
   mse_by_lod_count_summary = mse_by_lod_count_summary,
   mse_by_first2_lod_summary = mse_by_first2_lod_summary,
   sensspec_summary_long = sensspec_summary_long,
-  sensspec_summary = sensspec_summary,
-  logistics_summary = logistics_summary,
-  runs_by_method = runs_by_method
+  sensspec_summary = sensspec_summary
 )
 
 
 process_df <- combined_results$mse_by_first2_lod_summary |> 
   filter(
     split == "training",
-    # group == "-+" | group == "+-"
-    group == "++",
+    # group == "-+" | group == "+-",
+    # group == "++",
+    # group == '0',
+    # is.na(group),
     lod_quantile < 0.9
   ) |>
   select(
     n,
     lod_quantile,
     exposure_dist,
-    h_dist,
-    # group,
+    mean_offset,
+    group,
     any_of(c(
       "pooled_mse_uncensored",
       "pooled_mse_impute",
@@ -252,14 +260,14 @@ process_df <- combined_results$mse_by_first2_lod_summary |>
 
 
 library(looplot)
-
+colnames(process_df)[(ncol(process_df) - 3):ncol(process_df)] <- c("Oracle", "Single Imputation", "Augmented", "Truncated MI")
 
 
 plot_data = nested_loop_base_data(
     process_df, 
-    x = "lod_quantile", steps = c("n"),
-    # x = "lod_quantile", steps = c("n","group"),
-    grid_cols = "exposure_dist", grid_rows = "h_dist",
+    # x = "lod_quantile", steps = c("n"),
+    x = "lod_quantile", steps = c("n","group"),
+    grid_cols = "exposure_dist", grid_rows = "mean_offset",
     spu_x_shift = .2
 )
 
@@ -292,7 +300,7 @@ p = add_processing(
         ),
         # adjust theme
         add_custom_theme = list(
-            axis.text.x = element_text(angle = 0, 
+            axis.text.x = element_text(angle = 90, 
                                        vjust = 0.5, 
                                        size = 8)
         ), 
@@ -303,7 +311,7 @@ p = add_processing(
     )
 )
 print(p)
-ggsave("RMSE.png",width = 10,height = 10)
+# ggsave("RMSE-fully censored.png",width = 12,height = 8)
 
 ##############################
 
@@ -313,7 +321,7 @@ sens_plot_df <- combined_results$sensspec_summary_long |>
     n,
     lod_quantile,
     exposure_dist,
-    h_dist,
+    mean_offset,
     threshold,
     method,
     mean_sensitivity,
@@ -337,23 +345,28 @@ sens_plot_df <- combined_results$sensspec_summary_long |>
   )
 
 
-sens_plot_df <- sens_plot_df |> filter(metric=="specificity") |> select(
-  # n,
+sens_plot_df <- sens_plot_df |> 
+  filter(metric=="sensitivity") |> 
+  select(
+  n,
   lod_quantile,
   exposure_dist,
-  h_dist,
+  mean_offset,
   # metric,
   threshold,
   uncensored,
   impute,
-  augmented,
+  augmented_and,
+  augmented_or,
   trunc_mi
 ) 
 
+colnames(sens_plot_df)[6:10] <- c("Oracle", "Single Imputation", "Augmented and","Augmented or", "Truncated MI")
+
 plot_data = nested_loop_base_data(
     sens_plot_df, 
-    x = "lod_quantile", steps = c("threshold"),
-    grid_cols = "exposure_dist", grid_rows = "h_dist",
+    x = "lod_quantile", steps = c("n","threshold"),
+    grid_cols = "exposure_dist", grid_rows = "mean_offset",
     spu_x_shift = .2
 )
 
@@ -366,8 +379,9 @@ p = nested_loop_base_plot(
 
 plot_data = nested_loop_paramsteps_data(
     plot_data,
-    steps_y_base = -.2,
-    steps_y_height = .2
+    steps_y_base = 0,
+    steps_y_height = .3,
+    steps_y_shift = .3
 )
 
 p = nested_loop_paramsteps_plot(
@@ -385,7 +399,7 @@ p = add_processing(
         ),
         # adjust theme
         add_custom_theme = list(
-            axis.text.x = element_text(angle = 0, 
+            axis.text.x = element_text(angle = 90, 
                                        vjust = 0.5, 
                                        size = 8)
         )
@@ -396,6 +410,6 @@ p = add_processing(
     )
 )
 print(p)
-ggsave("Specificity.png",width = 10,height = 10)
+ggsave("Specificity.png",width = 12,height = 8)
 
 
