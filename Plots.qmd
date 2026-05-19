@@ -77,22 +77,26 @@ side_colors <- c("#9c179e","#ed7953")
 # This table links the facet's LOD value to the specific marker for each distribution
 marker_lookup <- data.frame(
   lod_vis = lods,
-  m_norm  = qnorm(lods,3,1),
-  m_unif  = qunif(lods,0,6)
+  m_norm  = qnorm(lods,0,1),
+  m_unif  = qunif(lods,-3,3)
 #   m_gamma = c(0.9612788, 1.678347, 2.692635)
 )
 
 # 2. Create the grid and join the marker values
-z1 <- seq(0, 6, length = 60)
-z2 <- seq(0, 6, length = 60)
-locations <- 3 + c(-1, 0, 1)
+z1 <- seq(-3, 3, length = 60)
+z2 <- seq(-3, 3, length = 60)
+locations <- 0 + c(-1, 0, 1)
 
 grid_all <- expand.grid(Z1 = z1, Z2 = z2, loc_val = locations, lod_vis = lods) %>%
   mutate(
-    eta = 1/4 * (Z1 + Z2 + 1/2 * Z1 * Z2),
-    resp = plogis(eta, location = loc_val, scale = 0.5),
-    loc_lab = paste("Location:", loc_val),
-    lod_lab = paste("LOD:", round(lod_vis, 2))
+    # eta = .2 * (Z1 + Z2 + .5 * Z1 * Z2),
+    # eta = Z1,
+    # eta = (Z1+Z2)/2,
+    # resp = plogis(eta, location = loc_val, scale = 0.5),
+    # resp = plogis((Z1+Z2)/2, location = loc_val, scale = 0.5),
+    resp = 0.5 * plogis(Z1, location = loc_val, scale = 1) + 0.5 * plogis(Z2, location = loc_val, scale = 1),
+    loc_lab = paste("h Center:", loc_val),
+    lod_lab = paste("LOD Quantile:", round(lod_vis, 2))
   ) %>%
   left_join(marker_lookup, by = "lod_vis") # Adds the specific markers to every row
 
@@ -113,12 +117,12 @@ ggplot(grid_all, aes(x = Z1, y = Z2, z = resp)) +
   facet_grid(lod_lab ~ loc_lab) +
   
   # --- Marginal Functions ---
-  geom_xsidefunction(fun = dnorm, args = list(mean = 3, sd = 1), color = side_colors[1], linewidth = 1) + 
-  geom_xsidefunction(fun = dunif, args = list(min = 0, max = 6), color = side_colors[2], linewidth = 1) + 
+  geom_xsidefunction(fun = dnorm, args = list(mean = 0, sd = 1), color = side_colors[1], linewidth = 1) + 
+  geom_xsidefunction(fun = dunif, args = list(min = -3, max = 3), color = side_colors[2], linewidth = 1) + 
 #   geom_xsidefunction(fun = dgamma, args = list(shape = 2, scale = 1), color = side_colors[3], linewidth = 1) + 
   
-  geom_ysidefunction(fun = dnorm, args = list(mean = 3, sd = 1), color = side_colors[1], linewidth = 1) + 
-  geom_ysidefunction(fun = dunif, args = list(min = 0, max = 6), color = side_colors[2], linewidth = 1) + 
+  geom_ysidefunction(fun = dnorm, args = list(mean = 0, sd = 1), color = side_colors[1], linewidth = 1) + 
+  geom_ysidefunction(fun = dunif, args = list(min = -3, max = 3), color = side_colors[2], linewidth = 1) + 
 #   geom_ysidefunction(fun = dgamma, args = list(shape = 2, scale = 1), color = side_colors[3], linewidth = 1) + 
   
 
@@ -141,13 +145,15 @@ ggplot(grid_all, aes(x = Z1, y = Z2, z = resp)) +
 
   theme_minimal() + 
   theme_ggside_minimal() + 
-  ggside(collapse = "y") + # Note: x-side markers will still "stack" if collapsed
-  theme(ggside.panel.scale.y = .2,
-        ggside.panel.scale.x = .2,
+  ggside(collapse = "y") + 
+  theme(ggside.panel.scale.y = .05,
+        ggside.panel.scale.x = .15,
+        ggside.axis.text.x = element_blank(), 
+        ggside.axis.text.y = element_blank(),
         legend.position = "none")
 
 
-ggsave("test.png",height = 10, width = 10)
+# ggsave("hCenterLoDdensityUnivar.png",height = 10, width = 10)
 
 
 ```
