@@ -69,6 +69,7 @@ dgamma_shaded <- function(x,lod) {
 library(ggplot2)
 library(ggside)
 library(dplyr)
+# library(metR)
 
 # 1. Define the parameters and the Marker Lookup Table
 lods <- c(0.25, 0.5, 0.75)
@@ -86,74 +87,154 @@ marker_lookup <- data.frame(
 z1 <- seq(-3, 3, length = 60)
 z2 <- seq(-3, 3, length = 60)
 locations <- 0 + c(-1, 0, 1)
+scales <- c(0.5,1.5)
 
-grid_all <- expand.grid(Z1 = z1, Z2 = z2, loc_val = locations, lod_vis = lods) %>%
+grid_all <- expand.grid(Z1 = z1, Z2 = z2, loc_val = locations, lod_vis = lods, scales = scales) %>%
   mutate(
-    # eta = .2 * (Z1 + Z2 + .5 * Z1 * Z2),
-    # eta = Z1,
-    # eta = (Z1+Z2)/2,
     # resp = plogis(eta, location = loc_val, scale = 0.5),
     # resp = plogis((Z1+Z2)/2, location = loc_val, scale = 0.5),
-    resp = 0.5 * plogis(Z1, location = loc_val, scale = 1) + 0.5 * plogis(Z2, location = loc_val, scale = 1),
+    resp = 0.5 * plogis(Z1, location = loc_val, scale = 1.5) + 0.5 * plogis(Z2, location = loc_val, scale = scales),
     loc_lab = paste("h Center:", loc_val),
-    lod_lab = paste("LOD Quantile:", round(lod_vis, 2))
+    lod_lab = paste("LOD Quantile:", round(lod_vis, 2)),
+    scale_lab = paste("Scale:", scales)
   ) %>%
   left_join(marker_lookup, by = "lod_vis") # Adds the specific markers to every row
 
 # 3. Build the plot
 ggplot(grid_all, aes(x = Z1, y = Z2, z = resp)) +
-  geom_contour_filled(breaks = seq(0, 1, .025)) +
+    geom_contour_filled(breaks = seq(0, 1, .025)) + 
   
-  # Reference lines in main plot (white)
-  geom_hline(aes(yintercept = m_norm), linetype = "dashed", color = side_colors[1]) + 
-  geom_hline(aes(yintercept = m_unif), linetype = "dashed", color = side_colors[2]) + 
-#   geom_hline(aes(yintercept = m_gamma), linetype = "dashed", color = side_colors[3]) + 
 
-  geom_vline(aes(xintercept = m_norm), linetype = "dashed", color = side_colors[1]) + 
-  geom_vline(aes(xintercept = m_unif), linetype = "dashed", color = side_colors[2]) + 
-#   geom_vline(aes(xintercept = m_gamma), linetype = "dashed", color = side_colors[3]) + 
+    geom_segment(aes(x = -3, xend = m_norm, y = m_norm, yend = m_norm, linetype  = factor(lod_vis)), color = side_colors[1]) + 
+    geom_segment(aes(x = m_norm, xend = m_norm, y = -3, yend = m_norm, linetype  = factor(lod_vis)), color = side_colors[1]) + 
+
+    geom_segment(aes(x = -3, xend = m_unif, y = m_unif, yend = m_unif, linetype  = factor(lod_vis)), color = side_colors[2]) + 
+    geom_segment(aes(x = m_unif, xend = m_unif, y = -3, yend = m_unif, linetype  = factor(lod_vis)), color = side_colors[2]) + 
+    scale_linetype_manual(values = c("solid", "dashed", "dotted")) + 
   
-  
-  facet_grid(lod_lab ~ loc_lab) +
+  facet_grid(loc_lab ~ scale_lab) +
   
   # --- Marginal Functions ---
   geom_xsidefunction(fun = dnorm, args = list(mean = 0, sd = 1), color = side_colors[1], linewidth = 1) + 
   geom_xsidefunction(fun = dunif, args = list(min = -3, max = 3), color = side_colors[2], linewidth = 1) + 
-#   geom_xsidefunction(fun = dgamma, args = list(shape = 2, scale = 1), color = side_colors[3], linewidth = 1) + 
   
   geom_ysidefunction(fun = dnorm, args = list(mean = 0, sd = 1), color = side_colors[1], linewidth = 1) + 
   geom_ysidefunction(fun = dunif, args = list(min = -3, max = 3), color = side_colors[2], linewidth = 1) + 
-#   geom_ysidefunction(fun = dgamma, args = list(shape = 2, scale = 1), color = side_colors[3], linewidth = 1) + 
   
 
   # --- Distribution Markers (Mapping to the joined columns) ---
-  # These will now respect the facet because they are part of the main data mapping
-  geom_xsidesegment(aes(x = m_norm, xend = m_norm, y = 0, yend = Inf), 
-                    color = side_colors[1], linetype = "dashed") +
-  geom_xsidesegment(aes(x = m_unif, xend = m_unif, y = 0, yend = Inf), 
-                    color = side_colors[2], linetype = "dashed") +
-#   geom_xsidesegment(aes(x = m_gamma, xend = m_gamma, y = 0, yend = Inf), 
-#                     color = side_colors[3], linetype = "dashed") +
+  geom_xsidesegment(aes(x = m_norm, xend = m_norm, y = 0, yend = dnorm(m_norm), linetype = factor(lod_vis)), 
+                    color = side_colors[1]) +
+  geom_xsidesegment(aes(x = m_unif, xend = m_unif, y = 0, yend = 1/6, linetype = factor(lod_vis)), 
+                    color = side_colors[2]) +
 
-  geom_ysidesegment(aes(y = m_norm, yend = m_norm, x = 0, xend = Inf), 
+  geom_ysidesegment(aes(y = m_norm, yend = m_norm, x = 0, xend = dnorm(m_norm)), 
                     color = side_colors[1], linetype = "dashed") +
-  geom_ysidesegment(aes(y = m_unif, yend = m_unif, x = 0, xend = Inf), 
+  geom_ysidesegment(aes(y = m_unif, yend = m_unif, x = 0, xend = 1/6), 
                     color = side_colors[2], linetype = "dashed") +
-#   geom_ysidesegment(aes(y = m_gamma, yend = m_gamma, x = 0, xend = Inf), 
-#                     color = side_colors[3], linetype = "dashed") +
   
 
   theme_minimal() + 
   theme_ggside_minimal() + 
-  ggside(collapse = "y") + 
+  ggside(collapse = "all") + 
   theme(ggside.panel.scale.y = .05,
         ggside.panel.scale.x = .15,
         ggside.axis.text.x = element_blank(), 
-        ggside.axis.text.y = element_blank(),
-        legend.position = "none")
+        ggside.axis.text.y = element_blank())
+        # legend.position = "none")
 
 
 # ggsave("hCenterLoDdensityUnivar.png",height = 10, width = 10)
 
 
 ```
+
+
+```{r}
+library(ggplot2)
+library(ggside)
+library(dplyr)
+
+# 1. Define the parameters and the Marker Lookup Table
+lods <- c(0.25, 0.5, 0.75)
+side_colors <- c("#9c179e","#ed7953")
+
+# This table links the facet's LOD value to the specific marker for each distribution
+marker_lookup <- data.frame(
+  lod_vis = lods,
+  m_norm  = qnorm(lods, 0, 1),
+  m_unif  = qunif(lods, -3, 3)
+)
+
+# 2. Create the grid and join the marker values
+z1 <- seq(-3, 3, length = 60)
+z2 <- seq(-3, 3, length = 60)
+locations <- 0 + c(-1, 0, 1)
+scales <- c(0.5, 1.5)
+
+grid_all <- expand.grid(Z1 = z1, Z2 = z2, loc_val = locations, lod_vis = lods, scales = scales) %>%
+  mutate(
+    # resp = 0.5 * plogis(Z1, location = loc_val, scale = scales) + 0.5 * plogis(Z2, location = loc_val, scale = scales),
+    resp = plogis((Z1+Z2)/2, location = loc_val, scale =scales) ,
+    loc_lab = paste("h Center:", loc_val),
+    lod_lab = paste("LOD Quantile:", round(lod_vis, 2)),
+    scale_lab = paste("Scale:", scales)
+  ) %>%
+  left_join(marker_lookup, by = "lod_vis") 
+
+# 3. Build the plot
+ggplot(grid_all, aes(x = Z1, y = Z2, z = resp)) +
+    # --- 1. Continuous Fill for Binned Contours ---
+  geom_contour_filled(aes(fill = after_stat(level_mid)), breaks = seq(0, 1, .025)) + 
+  scale_fill_viridis_c(name = "Response", breaks = c(0, 0.5, 1), limits = c(0, 1)) +
+
+  # --- Main Plot Segments (color moved inside aes) ---
+  geom_segment(aes(x = -3, xend = m_norm, y = m_norm, yend = m_norm, 
+                   linetype = factor(lod_vis), color = "Normal"), alpha = 0.05) + 
+  geom_segment(aes(x = m_norm, xend = m_norm, y = -3, yend = m_norm, 
+                   linetype = factor(lod_vis), color = "Normal"), alpha = 0.05) + 
+
+  geom_segment(aes(x = -3, xend = m_unif, y = m_unif, yend = m_unif, 
+                   linetype = factor(lod_vis), color = "Uniform"), alpha = 0.05) + 
+  geom_segment(aes(x = m_unif, xend = m_unif, y = -3, yend = m_unif, 
+                   linetype = factor(lod_vis), color = "Uniform"), alpha = 0.05) + 
+  
+  facet_grid(loc_lab ~ scale_lab) +
+  
+  # --- Marginal Functions (color moved inside aes) ---
+  geom_xsidefunction(fun = dnorm, args = list(mean = 0, sd = 1), 
+                     aes(color = "Normal"), linewidth = 0.5) + 
+  geom_xsidefunction(fun = dunif, args = list(min = -3, max = 3), 
+                     aes(color = "Uniform"), linewidth = 0.5) + 
+  
+  geom_ysidefunction(fun = dnorm, args = list(mean = 0, sd = 1), 
+                     aes(color = "Normal"), linewidth = 0.5) + 
+  geom_ysidefunction(fun = dunif, args = list(min = -3, max = 3), 
+                     aes(color = "Uniform"), linewidth = 0.5) + 
+
+  # --- Distribution Markers (color moved inside aes) ---
+  geom_xsidesegment(aes(x = m_norm, xend = m_norm, y = 0, yend = dnorm(m_norm), 
+                        linetype = factor(lod_vis), color = "Normal")) +
+  geom_xsidesegment(aes(x = m_unif, xend = m_unif, y = 0, yend = 1/6, 
+                        linetype = factor(lod_vis), color = "Uniform")) +
+
+  geom_ysidesegment(aes(y = m_norm, yend = m_norm, x = 0, xend = dnorm(m_norm), 
+                        linetype = factor(lod_vis), color = "Normal")) +
+  geom_ysidesegment(aes(y = m_unif, yend = m_unif, x = 0, xend = 1/6, 
+                        linetype = factor(lod_vis), color = "Uniform")) +
+  
+  # --- 2. Manual Scales for Legends ---
+  scale_color_manual(name = "Distribution", 
+                     values = c("Normal" = side_colors[1], "Uniform" = side_colors[2])) +
+  scale_linetype_manual(name = "LOD Quantile", 
+                        values = c("0.25" = "solid", "0.5" = "longdash", "0.75" = "dotted")) +
+
+  theme_minimal() + 
+  theme_ggside_minimal() + 
+  ggside(collapse = "all") + 
+  theme(ggside.axis.text.x = element_blank(), 
+        ggside.axis.text.y = element_blank())
+
+ggsave("h3Dens.png")
+```
+

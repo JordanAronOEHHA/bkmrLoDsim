@@ -1,7 +1,7 @@
 #!/bin/bash -l
 #SBATCH --nodes=1
 #SBATCH --ntasks-per-node=1
-#SBATCH --array=1-100
+#SBATCH --array=1-25
 #SBATCH --mail-type=NONE
 #SBATCH --mail-user=aron0064@umn.edu
 #SBATCH -A mfiecas
@@ -11,12 +11,14 @@ n=$1
 lod_quantile=$2
 exposure_dist=$3
 mean_offset=$4
+h_func=$5
+scale=$6
 date
 path="/projects/standard/mfiecas/aron0064/bkmrLoDsim"
 cd $path/Routputs
 start_time=$(date +%s)
 module load R/4.4.0-openblas-rocky8
-Rscript $path/Rcode/bmkrAug.R $n $lod_quantile $exposure_dist $mean_offset
+Rscript $path/Rcode/bmkrAug.R $n $lod_quantile $exposure_dist $mean_offset $h_func $scale
 finish_time=$(date +%s)
 elapsed_time=$((finish_time  - start_time))
 

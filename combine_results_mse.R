@@ -10,7 +10,10 @@ if (length(result_files) == 0) {
   stop("No .rds files found in Results/.")
 }
 
+counter  <- 0
 read_sim_result <- function(path) {
+  counter  <<- counter  +1
+  if (counter %% 500 ==0){print(counter)}
   sim_result <- readRDS(path)
 
   settings_tbl <- as_tibble(sim_result$settings)
@@ -139,7 +142,7 @@ pool_sensspec <- function(data, group_cols) {
 pivot_pooled_mse_wider <- function(data) {
   data |>
     pivot_wider(
-      id_cols = c(n, n_te, p, lod_quantile, exposure_dist, mean_offset, mcmc_iter, split, group),
+      id_cols = c(n, n_te, p, lod_quantile, exposure_dist, mean_offset, h_func, scale, mcmc_iter, split, group),
       names_from = method,
       values_from = pooled_mse,
       names_prefix = "pooled_mse_"
@@ -149,7 +152,7 @@ pivot_pooled_mse_wider <- function(data) {
 pivot_sensspec_wider <- function(data) {
   data |>
     pivot_wider(
-      id_cols = c(n, n_te, p, lod_quantile, exposure_dist, mean_offset, mcmc_iter, threshold),
+      id_cols = c(n, n_te, p, lod_quantile, exposure_dist, mean_offset, h_func, scale, mcmc_iter, threshold),
       names_from = method,
       values_from = c(mean_sensitivity, mean_specificity),
       names_sep = "_"
@@ -157,7 +160,6 @@ pivot_sensspec_wider <- function(data) {
 }
 
 combined_raw <- map(result_files, read_sim_result)
-
 combined_file_metadata <- map_dfr(combined_raw, "file_metadata")
 combined_mse_by_lod_count <- map_dfr(combined_raw, "mse_by_lod_count")
 combined_mse_by_first2_lod <- map_dfr(combined_raw, "mse_by_first2_lod")
@@ -171,6 +173,8 @@ scenario_cols <- c(
   "lod_quantile",
   "exposure_dist",
   "mean_offset",
+  "h_func",
+  "scale",
   "mcmc_iter"
 )
 
@@ -218,6 +222,8 @@ runs_by_method <- pool_mse(
     lod_quantile,
     exposure_dist,
     mean_offset,
+    h_func,
+    scale,
     runs
   )
 
@@ -237,18 +243,20 @@ combined_results <- list(
 process_df <- combined_results$mse_by_first2_lod_summary |> 
   filter(
     split == "training",
+    # h_func == 3
     # group == "-+" | group == "+-",
-    # group == "++",
+    group == "++",
     # group == '0',
     # is.na(group),
-    lod_quantile < 0.9
   ) |>
   select(
     n,
     lod_quantile,
     exposure_dist,
     mean_offset,
-    group,
+    scale,
+    # group,
+    h_func,
     any_of(c(
       "pooled_mse_uncensored",
       "pooled_mse_impute",
@@ -263,12 +271,26 @@ library(looplot)
 colnames(process_df)[(ncol(process_df) - 3):ncol(process_df)] <- c("Oracle", "Single Imputation", "Augmented", "Truncated MI")
 
 
+# plot_data = nested_loop_base_data(
+#     process_df, 
+#     x = "n", steps = c("group","exposure_dist","scale"),
+#     grid_cols = "mean_offset", grid_rows = "lod_quantile",
+#     spu_x_shift = .2 * 1000
+# )
+
+
 plot_data = nested_loop_base_data(
     process_df, 
-    # x = "lod_quantile", steps = c("n"),
-    x = "lod_quantile", steps = c("n","group"),
-    grid_cols = "exposure_dist", grid_rows = "mean_offset",
+    x = "lod_quantile", steps = c("mean_offset","scale","n"),
+    grid_cols = "exposure_dist", grid_rows = "h_func",
     spu_x_shift = .2
+)
+
+plot_data = nested_loop_paramsteps_data(
+    plot_data,
+    steps_y_base = -.1,
+    steps_y_height = .05,
+    steps_y_shift = .1
 )
 
 p = nested_loop_base_plot(
@@ -279,16 +301,10 @@ p = nested_loop_base_plot(
     grid_scales = "free_y"
 )
 
-plot_data = nested_loop_paramsteps_data(
-    plot_data,
-    steps_y_base = -.2,
-    steps_y_height = .2
-)
-
 p = nested_loop_paramsteps_plot(
     p, plot_data, 
     steps_values_annotate = TRUE, 
-    steps_annotation_size = 5
+    steps_annotation_size = 3
 )
 
 p = add_processing(
@@ -302,7 +318,7 @@ p = add_processing(
         add_custom_theme = list(
             axis.text.x = element_text(angle = 90, 
                                        vjust = 0.5, 
-                                       size = 8)
+                                       size = 7)
         ), 
         # add horizontal lines
         add_abline = list(
@@ -311,7 +327,7 @@ p = add_processing(
     )
 )
 print(p)
-# ggsave("RMSE-fully censored.png",width = 12,height = 8)
+ggsave("RMSE++.png",width = 12,height = 12)
 
 ##############################
 
@@ -322,6 +338,8 @@ sens_plot_df <- combined_results$sensspec_summary_long |>
     lod_quantile,
     exposure_dist,
     mean_offset,
+    h_func,
+    scale,
     threshold,
     method,
     mean_sensitivity,
@@ -347,47 +365,63 @@ sens_plot_df <- combined_results$sensspec_summary_long |>
 
 sens_plot_df <- sens_plot_df |> 
   filter(metric=="sensitivity") |> 
+  # filter(metric=="specificity") |> 
+  filter(threshold==0.75 | threshold==0.9) |> 
+  # filter(h_func==3) |> 
   select(
   n,
   lod_quantile,
   exposure_dist,
   mean_offset,
+  scale,
+  h_func,
   # metric,
   threshold,
   uncensored,
   impute,
-  augmented_and,
+  # augmented_and,
   augmented_or,
   trunc_mi
 ) 
 
-colnames(sens_plot_df)[6:10] <- c("Oracle", "Single Imputation", "Augmented and","Augmented or", "Truncated MI")
+# colnames(sens_plot_df)[8:12] <- c("Oracle", "Single Imputation", "Augmented and","Augmented or", "Truncated MI")
+
+colnames(sens_plot_df)[(length(colnames(sens_plot_df))-3):length(colnames(sens_plot_df))] <- c("Oracle", "Single Imputation","Augmented or", "Truncated MI")
+
+
+# plot_data = nested_loop_base_data(
+#     sens_plot_df, 
+#     x = "n", steps = c("threshold","exposure_dist","metric","scale"),
+#     grid_cols = "mean_offset", grid_rows = "lod_quantile",
+#     spu_x_shift = .2 * 1000
+# )
 
 plot_data = nested_loop_base_data(
     sens_plot_df, 
-    x = "lod_quantile", steps = c("n","threshold"),
-    grid_cols = "exposure_dist", grid_rows = "mean_offset",
-    spu_x_shift = .2
+    x = "lod_quantile", steps = c("threshold","n","scale","mean_offset"),
+    grid_cols = "exposure_dist", grid_rows = "h_func",
+    spu_x_shift = .3
 )
+
 
 p = nested_loop_base_plot(
     plot_data,
     x_name = "Detection Limit Quantile",
-    y_name = "Specificity", 
+    y_name = "Sensitivity", 
     colors = scales::viridis_pal(end = .85, option = "A")
 )
 
 plot_data = nested_loop_paramsteps_data(
     plot_data,
-    steps_y_base = 0,
-    steps_y_height = .3,
-    steps_y_shift = .3
+    steps_y_base = 0.6,
+    steps_y_height = .05,
+    steps_y_shift = .05
 )
 
 p = nested_loop_paramsteps_plot(
     p, plot_data, 
     steps_values_annotate = TRUE, 
-    steps_annotation_size = 5
+    steps_annotation_size = 3
 )
 
 p = add_processing(
@@ -401,7 +435,7 @@ p = add_processing(
         add_custom_theme = list(
             axis.text.x = element_text(angle = 90, 
                                        vjust = 0.5, 
-                                       size = 8)
+                                       size = 6)
         )
         # add horizontal lines
         # add_abline = list(
@@ -410,6 +444,6 @@ p = add_processing(
     )
 )
 print(p)
-ggsave("Specificity.png",width = 12,height = 8)
+ggsave("Sensitivity.png",width = 16,height = 12)
 
 
