@@ -18,21 +18,22 @@ init_seed <- as.numeric(Sys.getenv('SLURM_ARRAY_TASK_ID'))
 if (is.na(init_seed)){
   init_seed <- 999
   mcmc_iter <- 10
+  re_run_vec <- c(1)
 } else {
   mcmc_iter <- 10000
+  re_run_vec <- c(1,100,1000,1000)
 }
 
-re_run_vec <- c(1,100,1000,1000)
+
 seed_vec <- init_seed * re_run_vec
 
 ##### Control Parameters #####
 # Defaults 
 n <- 400
-n_te <- n
 lod_quantile <- 0.25
 exposure_dist <- "norm" # Options: norm unif gamma
 mean_offset <- 0
-h_func <- 1
+h_func <- 2
 scale <- 0.5
 
 # Command line arguments (override defaults if included)
@@ -99,6 +100,53 @@ mse_by_lod_count <- function(h_true, pred, group, p_val = NULL) {
   dplyr::bind_rows(results, total_row)
 }
 
+coverage_by_lod_count <- function(h_true, pred, group, p_val = NULL) {
+  if (is.null(p_val)) p_val <- max(group)
+
+  ci <- apply(
+    pred,
+    2,
+    quantile,
+    probs = c(0.025, 0.975),
+    na.rm = TRUE
+  )
+
+  covered <- h_true >= ci[1, ] & h_true <= ci[2, ]
+  ci_width <- ci[2, ] - ci[1, ]
+
+  observed <- tibble::tibble(
+    group = group,
+    covered = covered,
+    ci_width = ci_width
+  ) |>
+    dplyr::summarise(
+      n_obs = dplyr::n(),
+      n_covered = sum(covered, na.rm = TRUE),
+      empirical_coverage = mean(covered, na.rm = TRUE),
+      mean_ci_width = mean(ci_width, na.rm = TRUE),
+      .by = group
+    )
+
+  by_group <- tibble::tibble(group = 0:p_val) |>
+    dplyr::left_join(observed, by = "group") |>
+    dplyr::mutate(
+      n_obs = dplyr::coalesce(n_obs, 0L),
+      n_covered = dplyr::coalesce(n_covered, 0L),
+      empirical_coverage = ifelse(n_obs == 0L, NA_real_, empirical_coverage),
+      mean_ci_width = ifelse(n_obs == 0L, NA_real_, mean_ci_width)
+    )
+
+  overall <- tibble::tibble(
+    group = NA,
+    n_obs = length(h_true),
+    n_covered = sum(covered, na.rm = TRUE),
+    empirical_coverage = mean(covered, na.rm = TRUE),
+    mean_ci_width = mean(ci_width, na.rm = TRUE)
+  )
+
+  dplyr::bind_rows(by_group, overall)
+}
+
 mse_by_first2_lod <- function(h_true, pred, Z_obs) {
   z1_below <- is.na(Z_obs[, 1])
   z2_below <- is.na(Z_obs[, 2])
@@ -152,12 +200,88 @@ mse_by_first2_lod <- function(h_true, pred, Z_obs) {
   dplyr::bind_rows(by_group, overall)
 }
 
+coverage_by_first2_lod <- function(h_true, pred, Z_obs) {
+  z1_below <- is.na(Z_obs[, 1])
+  z2_below <- is.na(Z_obs[, 2])
+
+  if (h_func == 2 | h_func == 3){
+    group <- dplyr::case_when(
+      !z1_below & !z2_below ~ "++",
+      z1_below & !z2_below ~ "+-",
+      !z1_below & z2_below ~ "+-",
+      z1_below & z2_below ~ "--"
+    )
+  } else if (h_func == 1){
+    group <- dplyr::case_when(
+      !z1_below ~ "+",
+      z1_below  ~ "-",
+    )
+  }
+
+  ci <- apply(
+    pred,
+    2,
+    quantile,
+    probs = c(0.025, 0.975),
+    na.rm = TRUE
+  )
+
+  covered <- h_true >= ci[1, ] & h_true <= ci[2, ]
+  ci_width <- ci[2, ] - ci[1, ]
+
+  observed <- tibble::tibble(
+    group = group,
+    covered = covered,
+    ci_width = ci_width
+  ) |>
+    dplyr::summarise(
+      n_obs = dplyr::n(),
+      n_covered = sum(covered, na.rm = TRUE),
+      empirical_coverage = mean(covered, na.rm = TRUE),
+      mean_ci_width = mean(ci_width, na.rm = TRUE),
+      .by = group
+    )
+
+  if (h_func == 1){template <- tibble::tibble(group = c("+", "-"))}
+  if (h_func == 2){template <- tibble::tibble(group = c("++", "+-", "--"))}
+  if (h_func == 3){template <- tibble::tibble(group = c("++", "+-", "--"))}
+
+  by_group <- template |>
+    dplyr::left_join(observed, by = "group") |>
+    dplyr::mutate(
+      n_obs = dplyr::coalesce(n_obs, 0L),
+      n_covered = dplyr::coalesce(n_covered, 0L),
+      empirical_coverage = ifelse(n_obs == 0L, NA_real_, empirical_coverage),
+      mean_ci_width = ifelse(n_obs == 0L, NA_real_, mean_ci_width)
+    )
+
+  overall <- tibble::tibble(
+    group = "Overall",
+    n_obs = length(h_true),
+    n_covered = sum(covered, na.rm = TRUE),
+    empirical_coverage = mean(covered, na.rm = TRUE),
+    mean_ci_width = mean(ci_width, na.rm = TRUE)
+  )
+
+  dplyr::bind_rows(by_group, overall)
+}
+
 #empty table makes for when no complete case data is available 
 empty_mse_by_lod_count <- function(p) {
   tibble::tibble(
     group = c(0:p, NA),
     n_obs = 0L,
     mse = NA_real_
+  )
+}
+
+empty_coverage_by_lod_count <- function(p) {
+  tibble::tibble(
+    group = c(0:p, NA),
+    n_obs = 0L,
+    n_covered = 0L,
+    empirical_coverage = NA_real_,
+    mean_ci_width = NA_real_
   )
 }
 
@@ -172,7 +296,41 @@ empty_mse_by_first2_lod <- function() {
   )
 }
 
+empty_coverage_by_first2_lod <- function() {
+  if (h_func == 1){ grouping = c("+", "-", "Overall")}
+  if (h_func == 2){ grouping = c("++", "+-", "--", "Overall")}
+  if (h_func == 3){ grouping = c("++", "+-", "--", "Overall")}
+  tibble::tibble(
+    group = grouping,
+    n_obs = 0L,
+    n_covered = 0L,
+    empirical_coverage = NA_real_,
+    mean_ci_width = NA_real_
+  )
+}
+
 ##### Data functions #####
+
+true_h <- function(Z_raw, h_func, mean_offset, scale) {
+  Z_log <- log(Z_raw)
+
+  if (h_func == 1) {
+    return(4 * plogis(Z_log[, 1], location = mean_offset, scale = scale))
+  }
+
+  if (h_func == 2) {
+    return(
+      2 * plogis(Z_log[, 1], location = mean_offset, scale = scale) +
+        2 * plogis(Z_log[, 2], location = mean_offset, scale = scale)
+    )
+  }
+
+  if (h_func == 3) {
+    return(4 * plogis(0.5 * (Z_log[, 1] + Z_log[, 2]), location = mean_offset, scale = scale))
+  }
+
+  stop("Unsupported h_func")
+}
 
 CensorData <- function(Z_true, lod) {
   Z_obs <- Z_true
@@ -270,14 +428,315 @@ calc_sens_spec <- function(
     dplyr::ungroup()
 }
 
+##### Contrasts #####
+get_fixed_values <- function(Z_true, lod, fixed, fixed_at) {
+  fixed_above <- Z_true[Z_true[, fixed] >= lod[fixed], fixed]
+  fixed_below <- Z_true[Z_true[, fixed] < lod[fixed], fixed]
+
+  if (fixed_at == "below_lod") {
+    return(sort(fixed_below))
+  }
+
+  if (fixed_at == "median_above_lod") {
+    return(as.numeric(median(fixed_above, na.rm = TRUE)))
+  }
+
+  if (fixed_at == "lod") {
+    return(lod[fixed])
+  }
+
+  if (fixed_at == "q25_above_lod") {
+    return(as.numeric(quantile(fixed_above, 0.25, names = FALSE, type = 8)))
+  }
+
+  if (fixed_at == "q75_above_lod") {
+    return(as.numeric(quantile(fixed_above, 0.75, names = FALSE, type = 8)))
+  }
+
+  stop("Unsupported fixed_at: ", fixed_at)
+}
+
+make_one_direction_contrast <- function(Z_true, lod, moving, fixed, fixed_at = "below_lod") {
+  moving_above <- Z_true[Z_true[, moving] >= lod[moving], moving]
+  fixed_values <- get_fixed_values(Z_true, lod, fixed, fixed_at)
+
+  if (length(fixed_values) == 0) {
+    stop("No fixed exposure values available for fixed_at = ", fixed_at)
+  }
+
+  z_low <- as.numeric(quantile(moving_above, 0.25, names = FALSE, type = 8))
+  z_high <- as.numeric(quantile(moving_above, 0.75, names = FALSE, type = 8))
+
+  baseline <- apply(Z_true, 2, median, na.rm = TRUE)
+
+  Z_low <- matrix(rep(baseline, each = length(fixed_values)),
+                  nrow = length(fixed_values))
+  Z_high <- Z_low
+
+  Z_low[, moving] <- z_low
+  Z_high[, moving] <- z_high
+
+  Z_low[, fixed] <- fixed_values
+  Z_high[, fixed] <- fixed_values
+
+  list(
+    low = Z_low,
+    high = Z_high,
+    metadata = tibble::tibble(
+      moving = moving,
+      fixed = fixed,
+      fixed_at = fixed_at,
+      z_low = z_low,
+      z_high = z_high,
+      n_fixed_value = length(fixed_values),
+      quantile_type = 8
+    )
+  )
+}
+
+make_symmetric_contrast <- function(Z_true, lod) {
+  list(
+    z1_given_z2_below = make_one_direction_contrast(Z_true, lod, moving = 1, fixed = 2, fixed_at = "below_lod"),
+    z2_given_z1_below = make_one_direction_contrast(Z_true, lod, moving = 2, fixed = 1, fixed_at = "below_lod")
+  )
+}
+
+prep_uncensored <- function(Z_raw) {
+  scale(log(Z_raw), center = uncens_center, scale = uncens_scale)
+}
+
+prep_impute <- function(Z_raw) {
+  Z_obs <- CensorData(Z_raw, lod)
+  Z_imp <- SingleImputation(Z_obs, lod)
+  scale(log(Z_imp), center = impute_center, scale = impute_scale)
+}
+
+prep_augmented <- function(Z_raw) {
+  Z_obs <- CensorData(Z_raw, lod)
+  AugmentData(
+    Z_obs = Z_obs,
+    lod = lod,
+    center = aug_data$center,
+    scale_vals = aug_data$scale
+  )$Z
+}
+
+prep_complete_case <- function(Z_raw) {
+  scale(log(Z_raw), center = complete_center, scale = complete_scale)
+}
+
+prep_trunc_mi <- function(Z_raw) {
+  # Minimal version: represent censored contrast points by LoD/sqrt(2),
+  # then use the common MI scaling already used in the script.
+  Z_obs <- CensorData(Z_raw, lod)
+  Z_imp <- SingleImputation(Z_obs, lod)
+  scale(log(Z_imp), center = trunc_mi_center, scale = trunc_mi_scale)
+}
+
+estimate_contrast <- function(fit, contrast, prep_fun) {
+  Z_low <- prep_fun(contrast$low)
+  Z_high <- prep_fun(contrast$high)
+
+  pred_low <- SamplePred(
+    fit,
+    Znew = Z_low,
+    Xnew = cbind(0)
+  )
+
+  pred_high <- SamplePred(
+    fit,
+    Znew = Z_high,
+    Xnew = cbind(0)
+  )
+
+  rowMeans(pred_high - pred_low)
+}
+
+estimate_contrast_mi <- function(fit_list, contrast, prep_fun) {
+  draws <- lapply(fit_list, function(fit) {
+    estimate_contrast(fit, contrast, prep_fun)
+  })
+
+  unlist(draws)
+}
+
+summarize_contrast <- function(draws, truth, method) {
+  tibble::tibble(
+    method = method,
+    truth = truth,
+    est = mean(draws),
+    bias = mean(draws) - truth,
+    ci_low = as.numeric(quantile(draws, 0.025)),
+    ci_high = as.numeric(quantile(draws, 0.975)),
+    covered = truth >= ci_low & truth <= ci_high
+  )
+}
+
+contrast_truth <- function(contrast) {
+  mean(
+    true_h(contrast$high, h_func, mean_offset, scale) -
+      true_h(contrast$low, h_func, mean_offset, scale)
+  )
+}
+
+estimate_all_methods_for_contrast <- function(contrast_obj, contrast_name) {
+  truth <- contrast_truth(contrast_obj)
+  metadata <- contrast_obj$metadata
+
+  results <- list(
+    summarize_contrast(
+      estimate_contrast(m_uncensored, contrast_obj, prep_uncensored),
+      truth,
+      "uncensored"
+    ),
+    summarize_contrast(
+      estimate_contrast(m_impute, contrast_obj, prep_impute),
+      truth,
+      "impute"
+    ),
+    summarize_contrast(
+      estimate_contrast(m_augmented, contrast_obj, prep_augmented),
+      truth,
+      "augmented"
+    ),
+    summarize_contrast(
+      estimate_contrast_mi(fit_trunc_mi_list, contrast_obj, prep_trunc_mi),
+      truth,
+      "trunc_mi"
+    )
+  )
+
+  if (!is.null(m_complete_case)) {
+    results <- c(
+      results,
+      list(
+        summarize_contrast(
+          estimate_contrast(m_complete_case, contrast_obj, prep_complete_case),
+          truth,
+          "complete_case"
+        )
+      )
+    )
+  }
+
+  dplyr::bind_rows(results) |>
+    dplyr::mutate(
+      contrast = contrast_name,
+      moving = metadata$moving,
+      fixed = metadata$fixed,
+      fixed_at = metadata$fixed_at,
+      z_low = metadata$z_low,
+      z_high = metadata$z_high,
+      n_fixed_value = metadata$n_fixed_value,
+      quantile_type = metadata$quantile_type,
+      .before = method
+    )
+}
+
+estimate_interaction_contrast <- function(fit, contrast_median, contrast_below, prep_fun) {
+  estimate_contrast(fit, contrast_median, prep_fun) -
+    estimate_contrast(fit, contrast_below, prep_fun)
+}
+
+estimate_interaction_contrast_mi <- function(fit_list, contrast_median, contrast_below, prep_fun) {
+  draws <- lapply(fit_list, function(fit) {
+    estimate_interaction_contrast(fit, contrast_median, contrast_below, prep_fun)
+  })
+
+  unlist(draws)
+}
+
+estimate_all_methods_for_interaction <- function(
+  contrast_median,
+  contrast_below,
+  contrast_name
+) {
+  truth <- contrast_truth(contrast_median) - contrast_truth(contrast_below)
+  metadata_median <- contrast_median$metadata
+  metadata_below <- contrast_below$metadata
+
+  results <- list(
+    summarize_contrast(
+      estimate_interaction_contrast(
+        m_uncensored,
+        contrast_median,
+        contrast_below,
+        prep_uncensored
+      ),
+      truth,
+      "uncensored"
+    ),
+    summarize_contrast(
+      estimate_interaction_contrast(
+        m_impute,
+        contrast_median,
+        contrast_below,
+        prep_impute
+      ),
+      truth,
+      "impute"
+    ),
+    summarize_contrast(
+      estimate_interaction_contrast(
+        m_augmented,
+        contrast_median,
+        contrast_below,
+        prep_augmented
+      ),
+      truth,
+      "augmented"
+    ),
+    summarize_contrast(
+      estimate_interaction_contrast_mi(
+        fit_trunc_mi_list,
+        contrast_median,
+        contrast_below,
+        prep_trunc_mi
+      ),
+      truth,
+      "trunc_mi"
+    )
+  )
+
+  if (!is.null(m_complete_case)) {
+    results <- c(
+      results,
+      list(
+        summarize_contrast(
+          estimate_interaction_contrast(
+            m_complete_case,
+            contrast_median,
+            contrast_below,
+            prep_complete_case
+          ),
+          truth,
+          "complete_case"
+        )
+      )
+    )
+  }
+
+  dplyr::bind_rows(results) |>
+    dplyr::mutate(
+      contrast = contrast_name,
+      moving = metadata_median$moving,
+      fixed = metadata_median$fixed,
+      fixed_at = paste0(metadata_median$fixed_at, "_minus_", metadata_below$fixed_at),
+      z_low = metadata_median$z_low,
+      z_high = metadata_median$z_high,
+      n_fixed_value = metadata_median$n_fixed_value + metadata_below$n_fixed_value,
+      quantile_type = metadata_median$quantile_type,
+      .before = method
+    )
+}
+
+
 #### Big Wrapper for multiple HPC runs ####
 for (seed in seed_vec){
   #### Simulation ####
   print(seed)
   set.seed(seed)
   mi_seed <- seed
-
-  #_tr for training, _te for testing
 
   ##### Exposure and LoD#####
   #LoD is based on quantile of true distribution
@@ -286,16 +745,14 @@ for (seed in seed_vec){
   if (exposure_dist == "norm") {
     norm1 <- 0
     norm2 <- 1
-    Z_true_tr <- matrix(exp(rnorm(n * p,mean = norm1,sd = norm2)), ncol = p)
-    Z_true_te <- matrix(exp(rnorm(n_te * p,mean = norm1,sd = norm2)), ncol = p)
+    Z_true <- matrix(exp(rnorm(n * p,mean = norm1,sd = norm2)), ncol = p)
     lod <- exp(qnorm(lod_quantile, mean = norm1, sd = norm2))
     lod <- rep(lod, p)
 
   } else if (exposure_dist == "unif") {
     unif1 = -3
     unif2 = 3
-    Z_true_tr <- matrix(exp(runif(n * p, min = unif1, max = unif2)), ncol = p)
-    Z_true_te <- matrix(exp(runif(n_te * p, min = unif1, max = unif2)), ncol = p)
+    Z_true <- matrix(exp(runif(n * p, min = unif1, max = unif2)), ncol = p)
     lod <- exp(qunif(lod_quantile, min = unif1, max = unif2))
     lod <- rep(lod, p)
 
@@ -304,33 +761,16 @@ for (seed in seed_vec){
   }
 
   # Create observed data with censoring
-  Z_obs_tr <- CensorData(Z_true_tr, lod)
-  Z_obs_te <- CensorData(Z_true_te, lod)
+  Z_obs <- CensorData(Z_true, lod)
 
   #get indices for complete case, can be empty with higher % censoring
-  complete_case_idx_tr <- complete.cases(Z_obs_tr)
-  complete_case_idx_te <- complete.cases(Z_obs_te)
+  complete_case_idx <- complete.cases(Z_obs)
 
   ##### Response #####
+  h_true <- true_h(Z_true, h_func, mean_offset, scale)
 
-  Z_resp_tr <- log(Z_true_tr)
-  Z_resp_te <- log(Z_true_te)
-
-  if (h_func == 2){
-    h_true_tr <- 2 * plogis((Z_resp_tr[,1]), location = mean_offset, scale = scale) + 2 * plogis((Z_resp_tr[,2]), location = mean_offset, scale = scale)
-    h_true_te <- 2 * plogis((Z_resp_te[,1]), location = mean_offset, scale = scale) + 2 * plogis((Z_resp_te[,2]), location = mean_offset, scale = scale)
-  } else if (h_func == 3){
-    h_true_tr <- 4 * plogis(1/2 * (Z_resp_tr[,1] + Z_resp_tr[,2]), location = mean_offset, scale = scale)
-    h_true_te <- 4 * plogis(1/2 * (Z_resp_te[,1] + Z_resp_te[,2]), location = mean_offset, scale = scale)
-  } else if (h_func == 1){
-    h_true_tr <- 4 * plogis(Z_resp_tr[,1], location = mean_offset, scale = scale)
-    h_true_te <- 4 * plogis(Z_resp_te[,1], location = mean_offset, scale = scale)
-  }
-
-  y_tr <- h_true_tr + rnorm(n, sd = 1)
-  y_te <- h_true_te + rnorm(n_te, sd = 1)
-
-  y_complete_case_tr <- y_tr[complete_case_idx_tr]
+  y <- h_true + rnorm(n, sd = 1)
+  y_complete_case <- y[complete_case_idx]
 
   ##### Models #####
   # A. Uncensored
@@ -340,35 +780,27 @@ for (seed in seed_vec){
   # E. Truncated MI (tobit lognormal)
 
   ###### A. Uncensored ######
-  Z_uncensored_tr <- Z_true_tr
-  Z_uncensored_te <- Z_true_te
+  Z_uncensored <- Z_true
 
   ###### B. Imputation (LoD / sqrt(2)) ######
-  Z_impute_tr <- SingleImputation(Z_obs_tr, lod)
-  Z_impute_te <- SingleImputation(Z_obs_te, lod)
+  Z_impute <- SingleImputation(Z_obs, lod)
 
   ###### C. Augmented (Indicator + Continuous) ######
-  aug_train <- AugmentData(Z_obs = Z_obs_tr,lod = lod)
-  Z_aug_tr <- aug_train$Z
-
-  aug_test <- AugmentData(Z_obs = Z_obs_te, lod = lod, center = aug_train$center, scale_vals = aug_train$scale)
-  Z_aug_te <- aug_test$Z
+  aug_data <- AugmentData(Z_obs = Z_obs,lod = lod)
+  Z_aug <- aug_data$Z
 
   ###### D. Complete case ######
-  Z_complete_case_tr <- Z_uncensored_tr[complete_case_idx_tr, , drop = FALSE]
-  Z_complete_case_te <- Z_uncensored_te[complete_case_idx_te, , drop = FALSE]
+  Z_complete_case <- Z_uncensored[complete_case_idx, , drop = FALSE]
 
   ###### E. Truncated multiple imputation using qgcomp::mice.impute.leftcenslognorm ######
   mice.impute.leftcenslognorm <- qgcomp::mice.impute.leftcenslognorm
-  mi_data_tr <- cbind(y_tr, Z_obs_tr) |> as.data.frame()
-  mi_data_te <- cbind(y_te, Z_obs_te) |> as.data.frame()
-  colnames(mi_data_tr) <- c("y", paste0("z", seq_len(p)))
-  colnames(mi_data_te) <- c("y", paste0("z", seq_len(p)))
+  mi_data <- cbind(y, Z_obs) |> as.data.frame()
+  colnames(mi_data) <- c("y", paste0("z", seq_len(p)))
 
   #call with no iterations to get default settings
-  mi_init_tr <- mice(mi_data_tr, maxit = 0, printFlag = FALSE)
+  mi_init <- mice(mi_data, maxit = 0, printFlag = FALSE)
 
-  method_trunc <- mi_init_tr$method
+  method_trunc <- mi_init$method
   method_trunc[2:(p+1)] <- "leftcenslognorm"
 
   #only uses y to impute missing values, no covariates in current form and all z have some censoring
@@ -377,8 +809,8 @@ for (seed in seed_vec){
   colnames(predictor_matrix_trunc) <- c("y", paste0("z", seq_len(p)))
   rownames(predictor_matrix_trunc) <- c("y", paste0("z", seq_len(p)))
 
-  mids_trunc_tr <- mice(
-    data = mi_data_tr,
+  mids_trunc <- mice(
+    data = mi_data,
     m = m_imputations,
     maxit = mi_maxit,
     method = method_trunc,
@@ -388,130 +820,92 @@ for (seed in seed_vec){
     printFlag = FALSE
   )
 
-  mids_trunc_te <- mice(
-    data = mi_data_te,
-    m = m_imputations,
-    maxit = mi_maxit,
-    method = method_trunc,
-    predictorMatrix = predictor_matrix_trunc,
-    lod = c(NA, lod),
-    seed = mi_seed,
-    printFlag = FALSE
-  )
-
-  Z_trunc_mi_raw_list_tr <- complete(mids_trunc_tr, action = "all") |>
+  Z_trunc_mi_raw_list <- complete(mids_trunc, action = "all") |>
     lapply(function(dat) {
       dat[, paste0("z", seq_len(p)), drop = FALSE] |>
         as.matrix()
     })
 
-  Z_trunc_mi_raw_list_te <- complete(mids_trunc_te, action = "all") |>
-    lapply(function(dat) {
-      dat[, paste0("z", seq_len(p)), drop = FALSE] |>
-        as.matrix()
-    })
-
-  log_obs_for_scaling_tr <- log(Z_obs_tr)
-  trunc_mi_center_tr <- colMeans(log_obs_for_scaling_tr, na.rm = TRUE)
-  trunc_mi_scale_tr <- apply(log_obs_for_scaling_tr, 2, sd, na.rm = TRUE)
+  log_obs_for_scaling <- log(Z_obs)
+  trunc_mi_center <- colMeans(log_obs_for_scaling, na.rm = TRUE)
+  trunc_mi_scale <- apply(log_obs_for_scaling, 2, sd, na.rm = TRUE)
 
   ###### Scaling ######
   #augmented continuous scalet seperately due to the LoD adjustment
   #multiple imputation tobit also needs to be handled separately, done in prevous block
-  #training scale is applied to testing scale to ensure that scaling used in training is applied to testing data
   #common scaling for all MI data sets is used to ensure that they are on the same scale for pooling results 
 
   ####### uncensored scaling#######
-  uncens_center <- colMeans(log(Z_true_tr))
-  uncens_scale <- apply(log(Z_true_tr), 2, sd)
+  uncens_center <- colMeans(log(Z_true))
+  uncens_scale <- apply(log(Z_true), 2, sd)
 
-  Z_uncensored_tr <- scale( log(Z_true_tr), center = uncens_center, scale = uncens_scale)
-  Z_uncensored_te <- scale( log(Z_true_te), center = uncens_center, scale = uncens_scale)
+  Z_uncensored <- scale( log(Z_true), center = uncens_center, scale = uncens_scale)
 
   ####### SI scaling #######
 
-  impute_center <- colMeans(log(Z_impute_tr))
-  impute_scale <- apply(log(Z_impute_tr), 2, sd)
+  impute_center <- colMeans(log(Z_impute))
+  impute_scale <- apply(log(Z_impute), 2, sd)
 
-  Z_impute_tr <- scale(log(Z_impute_tr), center = impute_center, scale = impute_scale)
-  Z_impute_te <- scale(log(Z_impute_te), center = impute_center, scale = impute_scale)
+  Z_impute <- scale(log(Z_impute), center = impute_center, scale = impute_scale)
 
 
   ####### CC scaling #######
 
-  if (nrow(Z_complete_case_tr) >= 2) {
-    complete_center <- colMeans(log(Z_complete_case_tr))
-    complete_scale <- apply(log(Z_complete_case_tr), 2, sd)
+  if (nrow(Z_complete_case) >= 2) {
+    complete_center <- colMeans(log(Z_complete_case))
+    complete_scale <- apply(log(Z_complete_case), 2, sd)
 
-    Z_complete_case_tr <- scale(
-      log(Z_complete_case_tr),
+    Z_complete_case <- scale(
+      log(Z_complete_case),
       center = complete_center,
       scale = complete_scale
     )
-
-    if (nrow(Z_complete_case_te) > 0) {
-      Z_complete_case_te <- scale(
-        log(Z_complete_case_te),
-        center = complete_center,
-        scale = complete_scale
-      )
-    }
   }
 
 
   ##### BKMR ##### 
   #used to store results by how many values are below the LoD
   #ie group 0 is all values above the LoD, which is our focus
-  group_tr <- rowSums(is.na(Z_obs_tr))
-  group_te <- rowSums(is.na(Z_obs_te))
+  group <- rowSums(is.na(Z_obs))
 
-  group_complete_case_tr <- group_tr[complete_case_idx_tr]
-  group_complete_case_te <- group_te[complete_case_idx_te]
+  group_complete_case <- group[complete_case_idx]
 
   ###############################################################################
   #Model calls and MSE calculation
 
 
   ###### BKMR Uncensored ######
-  m_uncensored <- kmbayes(y = y_tr, Z = Z_uncensored_tr, iter = mcmc_iter,varsel = TRUE)
-  pred_uncensored_tr <- SamplePred(m_uncensored, Znew = Z_uncensored_tr)
-  results_uncens_tr  <- mse_by_lod_count(h_true_tr, pred_uncensored_tr, group_tr, p)
-  results_uncens_first2_tr  <- mse_by_first2_lod(h_true_tr, pred_uncensored_tr, Z_obs_tr)
+  m_uncensored <- kmbayes(y = y, Z = Z_uncensored, iter = mcmc_iter,varsel = TRUE)
+  pred_uncensored <- SamplePred(m_uncensored, Znew = Z_uncensored)
+  results_uncens  <- mse_by_lod_count(h_true, pred_uncensored, group, p)
+  results_uncens_first2  <- mse_by_first2_lod(h_true, pred_uncensored, Z_obs)
+  coverage_uncens <- coverage_by_lod_count(h_true, pred_uncensored, group, p)
+  coverage_uncens_first2 <- coverage_by_first2_lod(h_true, pred_uncensored, Z_obs)
   pip_uncensored <- ExtractPIPs(m_uncensored)
   sensspec_uncensored <- calc_sens_spec(pip_uncensored)
 
-  #remove cbind(0) when adding covariates
-  #need this when predicting on new data and dont have any new fixed covariates
-  pred_uncensored_te <- SamplePred(m_uncensored, Znew = Z_uncensored_te,Xnew = cbind(0))
-  results_uncens_te  <- mse_by_lod_count(h_true_te, pred_uncensored_te, group_te, p)
-  results_uncens_first2_te  <- mse_by_first2_lod(h_true_te, pred_uncensored_te, Z_obs_te)
-
   ###### BKMR Single Imputation ######
 
-  m_impute <- kmbayes(y = y_tr, Z = Z_impute_tr, iter = mcmc_iter,varsel = TRUE)
-  pred_impute_tr <- SamplePred(m_impute, Znew = Z_impute_tr)
-  results_impute_tr <- mse_by_lod_count(h_true_tr, pred_impute_tr, group_tr, p)
-  results_imputes_first2_tr <- mse_by_first2_lod(h_true_tr, pred_impute_tr, Z_obs_tr)
+  m_impute <- kmbayes(y = y, Z = Z_impute, iter = mcmc_iter,varsel = TRUE)
+  pred_impute <- SamplePred(m_impute, Znew = Z_impute)
+  results_impute <- mse_by_lod_count(h_true, pred_impute, group, p)
+  results_imputes_first2 <- mse_by_first2_lod(h_true, pred_impute, Z_obs)
+  coverage_impute <- coverage_by_lod_count(h_true, pred_impute, group, p)
+  coverage_impute_first2 <- coverage_by_first2_lod(h_true, pred_impute, Z_obs)
   pip_impute <- ExtractPIPs(m_impute)
   sensspec_impute <- calc_sens_spec(pip_impute)
-
-  pred_impute_te <- SamplePred(m_impute, Znew = Z_impute_te, Xnew = cbind(0))
-  results_impute_te <- mse_by_lod_count(h_true_te, pred_impute_te, group_te, p)
-  results_imputes_first2_te <- mse_by_first2_lod(h_true_te, pred_impute_te, Z_obs_te)
 
 
   ###### BKMR Missing Indicator Method ######
 
 
 
-  m_augmented <- kmbayes(y = y_tr, Z = Z_aug_tr, iter = mcmc_iter,varsel = TRUE)
-  pred_augmented_tr <- SamplePred(m_augmented, Znew = Z_aug_tr, Xnew = cbind(0))
-  results_augmented_tr <- mse_by_lod_count(h_true_tr, pred_augmented_tr, group_tr, p)
-  results_augmented_first2_tr <- mse_by_first2_lod(h_true_tr, pred_augmented_tr, Z_obs_tr)
-
-  pred_augmented_te <- SamplePred(m_augmented, Znew = Z_aug_te, Xnew = cbind(0))
-  results_augmented_te <- mse_by_lod_count(h_true_te, pred_augmented_te, group_te, p)
-  results_augmented_first2_te <- mse_by_first2_lod(h_true_te, pred_augmented_te, Z_obs_te)
+  m_augmented <- kmbayes(y = y, Z = Z_aug, iter = mcmc_iter,varsel = TRUE)
+  pred_augmented <- SamplePred(m_augmented, Znew = Z_aug, Xnew = cbind(0))
+  results_augmented <- mse_by_lod_count(h_true, pred_augmented, group, p)
+  results_augmented_first2 <- mse_by_first2_lod(h_true, pred_augmented, Z_obs)
+  coverage_augmented <- coverage_by_lod_count(h_true, pred_augmented, group, p)
+  coverage_augmented_first2 <- coverage_by_first2_lod(h_true, pred_augmented, Z_obs)
 
 
   augmented_pips <- extract_augmented_chemical_pips(m_augmented, p = 4)
@@ -526,36 +920,35 @@ for (seed in seed_vec){
 
   ###### BKMR Complete Case ######
 
-  n_complete_tr <- nrow(Z_complete_case_tr)
+  n_complete <- nrow(Z_complete_case)
 
-  if (n_complete_tr >= 2) {
-    m_complete_case <- kmbayes( y = y_complete_case_tr, Z = Z_complete_case_tr, iter = mcmc_iter,varsel = TRUE)
-    pred_complete_case_tr <- SamplePred( m_complete_case, Znew = Z_complete_case_tr)
-    results_complete_case_tr <- mse_by_lod_count(h_true_tr[complete_case_idx_tr],pred_complete_case_tr,group_complete_case_tr,p)
-    results_complete_cases_first2_tr <- mse_by_first2_lod( h_true_tr[complete_case_idx_tr], pred_complete_case_tr, Z_obs_tr[complete_case_idx_tr, , drop = FALSE])
+  if (n_complete >= 2) {
+    m_complete_case <- kmbayes( y = y_complete_case, Z = Z_complete_case, iter = mcmc_iter,varsel = TRUE)
+    pred_complete_case <- SamplePred( m_complete_case, Znew = Z_complete_case)
+    results_complete_case <- mse_by_lod_count(h_true[complete_case_idx],pred_complete_case,group_complete_case,p)
+    results_complete_cases_first2 <- mse_by_first2_lod( h_true[complete_case_idx], pred_complete_case, Z_obs[complete_case_idx, , drop = FALSE])
+    coverage_complete_case <- coverage_by_lod_count(
+      h_true[complete_case_idx],
+      pred_complete_case,
+      group_complete_case,
+      p
+    )
+    coverage_complete_case_first2 <- coverage_by_first2_lod(
+      h_true[complete_case_idx],
+      pred_complete_case,
+      Z_obs[complete_case_idx, , drop = FALSE]
+    )
     pip_complete_case <- ExtractPIPs(m_complete_case)
     sensspec_complete_case <- calc_sens_spec(pip_complete_case)
 
-    if (nrow(Z_complete_case_te) > 0 && !is.null(m_complete_case)) {
-      pred_complete_case_te <- SamplePred( m_complete_case, Znew = Z_complete_case_te, Xnew = cbind(0))
-      results_complete_case_te <- mse_by_lod_count( h_true_te[complete_case_idx_te], pred_complete_case_te, group_complete_case_te, p)
-      results_complete_cases_first2_te <- mse_by_first2_lod( h_true_te[complete_case_idx_te], pred_complete_case_te, Z_obs_te[complete_case_idx_te, , drop = FALSE])
-
-    } else {
-      pred_complete_case_te <- NULL
-      results_complete_case_te <- empty_mse_by_lod_count(p)
-      results_complete_cases_first2_te <- empty_mse_by_first2_lod()
-    }
-
   } else {
     m_complete_case <- NULL
-    pred_complete_case_tr <- NULL
-    pred_complete_case_te <- NULL
+    pred_complete_case <- NULL
 
-    results_complete_case_tr <- empty_mse_by_lod_count(p)
-    results_complete_cases_first2_tr <- empty_mse_by_first2_lod()
-    results_complete_case_te <- empty_mse_by_lod_count(p)
-    results_complete_cases_first2_te <- empty_mse_by_first2_lod()
+    results_complete_case <- empty_mse_by_lod_count(p)
+    results_complete_cases_first2 <- empty_mse_by_first2_lod()
+    coverage_complete_case <- empty_coverage_by_lod_count(p)
+    coverage_complete_case_first2 <- empty_coverage_by_first2_lod()
 
     pip_complete_case <- pip_uncensored
     pip_complete_case[,2] <- NA
@@ -566,22 +959,17 @@ for (seed in seed_vec){
 
   ###### BKMR MI Tobit ######
   #create empty lists to store results for MI 
-  Z_trunc_mi_list_tr <- vector("list", length = m_imputations)
-  fit_trunc_mi_list_tr <- vector("list", length = m_imputations)
-  pred_trunc_mi_list_tr <- vector("list", length = m_imputations)
+  Z_trunc_mi_list <- vector("list", length = m_imputations)
+  fit_trunc_mi_list <- vector("list", length = m_imputations)
+  pred_trunc_mi_list <- vector("list", length = m_imputations)
   pip_trunc_mi_list <- vector("list", length = m_imputations)
 
-  Z_trunc_mi_list_te <- vector("list", length = m_imputations)
-  pred_trunc_mi_list_te <- vector("list", length = m_imputations)
-
   for (m in seq_len(m_imputations)) {
-    Z_trunc_mi_list_tr[[m]] <- scale( log(Z_trunc_mi_raw_list_tr[[m]]), center = trunc_mi_center_tr, scale = trunc_mi_scale_tr)
-    Z_trunc_mi_list_te[[m]] <- scale( log(Z_trunc_mi_raw_list_te[[m]]), center = trunc_mi_center_tr, scale = trunc_mi_scale_tr)
-    fit_trunc_mi_list_tr[[m]] <- kmbayes(y = y_tr,Z = Z_trunc_mi_list_tr[[m]],iter = mcmc_iter,varsel = TRUE)
-    pip_trunc_mi_list[[m]] <- ExtractPIPs(fit_trunc_mi_list_tr[[m]])[,2]
+    Z_trunc_mi_list[[m]] <- scale( log(Z_trunc_mi_raw_list[[m]]), center = trunc_mi_center, scale = trunc_mi_scale)
+    fit_trunc_mi_list[[m]] <- kmbayes(y = y,Z = Z_trunc_mi_list[[m]],iter = mcmc_iter,varsel = TRUE)
+    pip_trunc_mi_list[[m]] <- ExtractPIPs(fit_trunc_mi_list[[m]])[,2]
 
-    pred_trunc_mi_list_tr[[m]] <- SamplePred(fit_trunc_mi_list_tr[[m]],Znew = Z_trunc_mi_list_tr[[m]])
-    pred_trunc_mi_list_te[[m]] <- SamplePred(fit_trunc_mi_list_tr[[m]],Znew = Z_trunc_mi_list_te[[m]],Xnew = cbind(0))
+    pred_trunc_mi_list[[m]] <- SamplePred(fit_trunc_mi_list[[m]],Znew = Z_trunc_mi_list[[m]])
   }
 
   #used to get formatting
@@ -589,13 +977,77 @@ for (seed in seed_vec){
   pip_trunc_mi[,2] <- Reduce("+", pip_trunc_mi_list) / m_imputations
   sensspec_trunc_mi <- calc_sens_spec(pip_trunc_mi)
 
-  pred_trunc_mi_tr <- do.call(rbind, pred_trunc_mi_list_tr)
-  pred_trunc_mi_te <- do.call(rbind, pred_trunc_mi_list_te)
+  pred_trunc_mi <- do.call(rbind, pred_trunc_mi_list)
 
-  results_trunc_mi_tr <- mse_by_lod_count( h_true_tr, pred_trunc_mi_tr, group_tr, p)
-  results_trunc_mi_first2_tr <- mse_by_first2_lod( h_true_tr, pred_trunc_mi_tr, Z_obs_tr)
-  results_trunc_mi_te <- mse_by_lod_count( h_true_te, pred_trunc_mi_te, group_te, p)
-  results_trunc_mi_first2_te <- mse_by_first2_lod( h_true_te, pred_trunc_mi_te, Z_obs_te)
+  results_trunc_mi <- mse_by_lod_count( h_true, pred_trunc_mi, group, p)
+  results_trunc_mi_first2 <- mse_by_first2_lod( h_true, pred_trunc_mi, Z_obs)
+  coverage_trunc_mi <- coverage_by_lod_count(h_true, pred_trunc_mi, group, p)
+  coverage_trunc_mi_first2 <- coverage_by_first2_lod(h_true, pred_trunc_mi, Z_obs)
+
+
+  ##### Contrast estimation #####
+  contrast_z1_given_z2 <- make_one_direction_contrast(
+    Z_true = Z_true,
+    lod = lod,
+    moving = 1,
+    fixed = 2,
+    fixed_at = "below_lod"
+  )
+
+  contrast_z2_given_z1 <- make_one_direction_contrast(
+    Z_true = Z_true,
+    lod = lod,
+    moving = 2,
+    fixed = 1,
+    fixed_at = "below_lod"
+  )
+
+  contrast_z1_given_z2_median <- make_one_direction_contrast(
+    Z_true = Z_true,
+    lod = lod,
+    moving = 1,
+    fixed = 2,
+    fixed_at = "median_above_lod"
+  )
+
+  contrast_z2_given_z1_median <- make_one_direction_contrast(
+    Z_true = Z_true,
+    lod = lod,
+    moving = 2,
+    fixed = 1,
+    fixed_at = "median_above_lod"
+  )
+
+  contrast_results <- dplyr::bind_rows(
+    estimate_all_methods_for_contrast(
+      contrast_z1_given_z2,
+      "z1_75_vs_25_given_z2_below"
+    ),
+    estimate_all_methods_for_contrast(
+      contrast_z2_given_z1,
+      "z2_75_vs_25_given_z1_below"
+    ),
+    estimate_all_methods_for_contrast(
+      contrast_z1_given_z2_median,
+      "z1_75_vs_25_given_z2_median_above_lod"
+    ),
+    estimate_all_methods_for_contrast(
+      contrast_z2_given_z1_median,
+      "z2_75_vs_25_given_z1_median_above_lod"
+    ),
+    estimate_all_methods_for_interaction(
+      contrast_z1_given_z2_median,
+      contrast_z1_given_z2,
+      "interaction_z1_median_above_lod_minus_below_lod"
+    ),
+    estimate_all_methods_for_interaction(
+      contrast_z2_given_z1_median,
+      contrast_z2_given_z1,
+      "interaction_z2_median_above_lod_minus_below_lod"
+    )
+  )
+
+  contrast_results
 
   ##### Results Compilation and Saving #####
 
@@ -603,7 +1055,6 @@ for (seed in seed_vec){
     settings = list(
       seed = seed,
       n = n,
-      n_te = n_te,
       p = p,
       lod_quantile = lod_quantile,
       exposure_dist = exposure_dist,
@@ -619,37 +1070,33 @@ for (seed in seed_vec){
       run_mem = sum(gc()[, 6])
     ),
     results = list(
-      training = list(
-        mse_by_lod_count = list(
-          uncensored = results_uncens_tr,
-          impute = results_impute_tr,
-          augmented = results_augmented_tr,
-          complete_case = results_complete_case_tr,
-          trunc_mi = results_trunc_mi_tr
-        ),
-        mse_by_first2_lod = list(
-          uncensored = results_uncens_first2_tr,
-          impute = results_imputes_first2_tr,
-          augmented = results_augmented_first2_tr,
-          complete_case = results_complete_cases_first2_tr,
-          trunc_mi = results_trunc_mi_first2_tr
-        )
+      mse_by_lod_count = list(
+        uncensored = results_uncens,
+        impute = results_impute,
+        augmented = results_augmented,
+        complete_case = results_complete_case,
+        trunc_mi = results_trunc_mi
       ),
-      testing = list(
-        mse_by_lod_count = list(
-          uncensored = results_uncens_te,
-          impute = results_impute_te,
-          augmented = results_augmented_te,
-          complete_case = results_complete_case_te,
-          trunc_mi = results_trunc_mi_te
-        ),
-        mse_by_first2_lod = list(
-          uncensored = results_uncens_first2_te,
-          impute = results_imputes_first2_te,
-          augmented = results_augmented_first2_te,
-          complete_case = results_complete_cases_first2_te,
-          trunc_mi = results_trunc_mi_first2_te
-        )
+      mse_by_first2_lod = list(
+        uncensored = results_uncens_first2,
+        impute = results_imputes_first2,
+        augmented = results_augmented_first2,
+        complete_case = results_complete_cases_first2,
+        trunc_mi = results_trunc_mi_first2
+      ),
+      coverage_by_lod_count = list(
+        uncensored = coverage_uncens,
+        impute = coverage_impute,
+        augmented = coverage_augmented,
+        complete_case = coverage_complete_case,
+        trunc_mi = coverage_trunc_mi
+      ),
+      coverage_by_first2_lod = list(
+        uncensored = coverage_uncens_first2,
+        impute = coverage_impute_first2,
+        augmented = coverage_augmented_first2,
+        complete_case = coverage_complete_case_first2,
+        trunc_mi = coverage_trunc_mi_first2
       ),
       pips = list(
         uncensored = pip_uncensored,
@@ -666,7 +1113,8 @@ for (seed in seed_vec){
         augmented_or = sensspec_augmented_or,
         complete_case = sensspec_complete_case,
         trunc_mi = sensspec_trunc_mi
-      )
+      ),
+      contrasts = contrast_results
     )
   )
 
