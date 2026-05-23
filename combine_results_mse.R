@@ -214,18 +214,42 @@ pool_contrasts <- function(data, group_cols) {
     group_by(across(all_of(group_cols))) |>
     summarize(
       runs = n_distinct(seed),
+      n_contrast_estimates = dplyr::n(),
       mean_n_fixed_value = mean(n_fixed_value, na.rm = TRUE),
       mean_truth = mean(truth, na.rm = TRUE),
       mean_est = mean(est, na.rm = TRUE),
       mean_bias = mean(bias, na.rm = TRUE),
       rmse = sqrt(mean(bias^2, na.rm = TRUE)),
       coverage = mean(covered, na.rm = TRUE),
-      ci_coverage = coverage,
-      ci_coverage_pct = 100 * ci_coverage,
       mean_ci_width = mean(ci_width, na.rm = TRUE),
       .groups = "drop"
     ) |>
     arrange(across(all_of(group_cols)))
+}
+
+add_contrast_family <- function(data) {
+  if (nrow(data) == 0) {
+    return(data)
+  }
+
+  data |>
+    mutate(
+      contrast_family = dplyr::case_when(
+        contrast %in% c(
+          "z1_75_vs_25_given_z2_below",
+          "z2_75_vs_25_given_z1_below"
+        ) ~ "75_vs_25_given_other_below",
+        contrast %in% c(
+          "z1_75_vs_25_given_z2_median_above_lod",
+          "z2_75_vs_25_given_z1_median_above_lod"
+        ) ~ "75_vs_25_given_other_median_above_lod",
+        contrast %in% c(
+          "interaction_z1_median_above_lod_minus_below_lod",
+          "interaction_z2_median_above_lod_minus_below_lod"
+        ) ~ "interaction_median_above_lod_minus_below_lod",
+        TRUE ~ contrast
+      )
+    )
 }
 
 pivot_pooled_mse_wider <- function(data) {
@@ -256,7 +280,8 @@ combined_coverage_by_lod_count <- map_dfr(combined_raw, "coverage_by_lod_count")
 combined_coverage_by_first2_lod <- map_dfr(combined_raw, "coverage_by_first2_lod")
 combined_sensspec <- map_dfr(combined_raw, "sensspec")
 combined_pips <- map_dfr(combined_raw, "pips")
-combined_contrasts <- map_dfr(combined_raw, "contrasts")
+combined_contrasts <- map_dfr(combined_raw, "contrasts") |>
+  add_contrast_family()
 
 scenario_cols <- c(
   "n",
@@ -335,7 +360,7 @@ sensspec_summary <- sensspec_summary_long |>
 
 contrast_summary <- pool_contrasts(
   combined_contrasts,
-  c(scenario_cols, "contrast", "moving", "fixed", "fixed_at", "method")
+  c(scenario_cols, "contrast_family", "fixed_at", "method")
 )
 
 logistics_summary <- pool_logistics(
