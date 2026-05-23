@@ -21,7 +21,7 @@ if (is.na(init_seed)){
   re_run_vec <- c(1)
 } else {
   mcmc_iter <- 10000
-  re_run_vec <- c(1,100,1000,1000)
+  re_run_vec <- c(1,100,1000,10000)
 }
 
 
