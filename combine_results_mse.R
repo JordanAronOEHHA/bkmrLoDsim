@@ -322,40 +322,6 @@ coverage_by_first2_lod_summary <- pool_coverage(
   c(scenario_cols, "method", "group")
 )
 
-ci_width_by_lod_count_summary <- if (nrow(coverage_by_lod_count_summary) == 0) {
-  tibble()
-} else {
-  coverage_by_lod_count_summary |>
-    select(
-      all_of(scenario_cols),
-      method,
-      group,
-      runs,
-      total_n_obs,
-      total_covered,
-      pooled_mean_ci_width = mean_ci_width,
-      empirical_coverage,
-      empirical_coverage_pct
-    )
-}
-
-ci_width_by_first2_lod_summary <- if (nrow(coverage_by_first2_lod_summary) == 0) {
-  tibble()
-} else {
-  coverage_by_first2_lod_summary |>
-    select(
-      all_of(scenario_cols),
-      method,
-      group,
-      runs,
-      total_n_obs,
-      total_covered ,
-      pooled_mean_ci_width = mean_ci_width,
-      empirical_coverage,
-      empirical_coverage_pct
-    )
-}
-
 sensspec_summary_long <- pool_sensspec(
   combined_sensspec,
   c(scenario_cols, "method", "threshold")
@@ -409,8 +375,6 @@ combined_results <- list(
   mse_by_first2_lod_summary = mse_by_first2_lod_summary,
   coverage_by_lod_count_summary = coverage_by_lod_count_summary,
   coverage_by_first2_lod_summary = coverage_by_first2_lod_summary,
-  ci_width_by_lod_count_summary = ci_width_by_lod_count_summary,
-  ci_width_by_first2_lod_summary = ci_width_by_first2_lod_summary,
   sensspec_summary_long = sensspec_summary_long,
   sensspec_summary = sensspec_summary,
   contrast_summary = contrast_summary
