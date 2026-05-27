@@ -1,5 +1,9 @@
-#TODO add fixed effects 
-##TODO add FE to MI 
+q_fixed_effects <- 2L
+fixed_effect_beta <- c(-.25, 0.25)
+
+zero_fixed_effects <- function(n_rows) {
+  matrix(0, nrow = n_rows, ncol = q_fixed_effects)
+}
 
 
 start_time <- Sys.time()
@@ -13,19 +17,25 @@ library(qgcomp)
 #### Setup Parameters ####
 
 # 1. Setup Simulation Parameters
-#TODO set array number to seed if present
-init_seed <- as.numeric(Sys.getenv('SLURM_ARRAY_TASK_ID'))
-if (is.na(init_seed)){
-  init_seed <- 999
+
+RNGkind("L'Ecuyer-CMRG")
+
+array_id <- as.integer(Sys.getenv("SLURM_ARRAY_TASK_ID"))
+
+
+
+if (is.na(array_id)){
+  array_id <- 1
+  seeds_per_job <- 1
+
   mcmc_iter <- 10
-  re_run_vec <- c(1)
 } else {
+  seeds_per_job <- 4
+
   mcmc_iter <- 10000
-  re_run_vec <- c(1,100,1000,10000)
 }
 
-
-seed_vec <- init_seed * re_run_vec
+seed_vec <- (array_id - 1) * seeds_per_job + seq_len(seeds_per_job)
 
 ##### Control Parameters #####
 # Defaults 
@@ -54,6 +64,8 @@ print(paste("exposure_dist:", exposure_dist))
 print(paste("mean_offset:", mean_offset))
 print(paste("h_func:", h_func))
 print(paste("scale:", scale))
+print(paste("q_fixed_effects:", q_fixed_effects))
+print(paste("fixed_effect_beta:", paste(fixed_effect_beta, collapse = ",")))
 
 ##### Hyper Parameters #####
 p <- 4
@@ -540,13 +552,13 @@ estimate_contrast <- function(fit, contrast, prep_fun) {
   pred_low <- SamplePred(
     fit,
     Znew = Z_low,
-    Xnew = cbind(0)
+    Xnew = zero_fixed_effects(nrow(Z_low))
   )
 
   pred_high <- SamplePred(
     fit,
     Znew = Z_high,
-    Xnew = cbind(0)
+    Xnew = zero_fixed_effects(nrow(Z_high))
   )
 
   rowMeans(pred_high - pred_low)
@@ -569,6 +581,73 @@ summarize_contrast <- function(draws, truth, method) {
     ci_low = as.numeric(quantile(draws, 0.025)),
     ci_high = as.numeric(quantile(draws, 0.975)),
     covered = truth >= ci_low & truth <= ci_high
+  )
+}
+
+beta_draw_matrix <- function(fit) {
+  if (is.null(fit) || is.null(fit$beta)) {
+    return(NULL)
+  }
+
+  beta <- fit$beta
+  if (is.null(dim(beta))) {
+    return(matrix(beta, ncol = q_fixed_effects))
+  }
+
+  beta <- as.matrix(beta)
+  if (ncol(beta) == q_fixed_effects) {
+    return(beta)
+  }
+  if (nrow(beta) == q_fixed_effects) {
+    return(t(beta))
+  }
+
+  stop("Unexpected fixed-effect beta dimensions")
+}
+
+summarize_fixed_effect_draws <- function(beta_draws, method) {
+  fixed_effect <- paste0("x", seq_len(q_fixed_effects))
+
+  if (is.null(beta_draws) || nrow(beta_draws) == 0) {
+    return(tibble::tibble(
+      method = method,
+      fixed_effect = fixed_effect,
+      truth = fixed_effect_beta,
+      est = NA_real_,
+      bias = NA_real_,
+      ci_low = NA_real_,
+      ci_high = NA_real_,
+      covered = NA
+    ))
+  }
+
+  est <- colMeans(beta_draws)
+  ci_low <- apply(beta_draws, 2, quantile, 0.025)
+  ci_high <- apply(beta_draws, 2, quantile, 0.975)
+
+  tibble::tibble(
+    method = method,
+    fixed_effect = fixed_effect,
+    truth = fixed_effect_beta,
+    est = est,
+    bias = est - fixed_effect_beta,
+    ci_low = as.numeric(ci_low),
+    ci_high = as.numeric(ci_high),
+    covered = fixed_effect_beta >= ci_low & fixed_effect_beta <= ci_high
+  )
+}
+
+summarize_fixed_effects <- function(fit, method) {
+  summarize_fixed_effect_draws(beta_draw_matrix(fit), method)
+}
+
+summarize_fixed_effects_mi <- function(fit_list, method = "trunc_mi") {
+  draws <- lapply(fit_list, beta_draw_matrix)
+  draws <- draws[!vapply(draws, is.null, logical(1))]
+
+  summarize_fixed_effect_draws(
+    if (length(draws) == 0) NULL else do.call(rbind, draws),
+    method
   )
 }
 
@@ -768,9 +847,14 @@ for (seed in seed_vec){
 
   ##### Response #####
   h_true <- true_h(Z_true, h_func, mean_offset, scale)
+  X <- matrix(rnorm(n * q_fixed_effects), nrow = n)
+  X <- scale(X, center = TRUE, scale = FALSE)
+  colnames(X) <- paste0("x", seq_len(q_fixed_effects))
+  fixed_effect <- drop(X %*% fixed_effect_beta)
 
-  y <- h_true + rnorm(n, sd = 1)
+  y <- h_true + fixed_effect + rnorm(n, sd = 1)
   y_complete_case <- y[complete_case_idx]
+  X_complete_case <- X[complete_case_idx, , drop = FALSE]
 
   ##### Models #####
   # A. Uncensored
@@ -794,20 +878,22 @@ for (seed in seed_vec){
 
   ###### E. Truncated multiple imputation using qgcomp::mice.impute.leftcenslognorm ######
   mice.impute.leftcenslognorm <- qgcomp::mice.impute.leftcenslognorm
-  mi_data <- cbind(y, Z_obs) |> as.data.frame()
-  colnames(mi_data) <- c("y", paste0("z", seq_len(p)))
+  x_names <- paste0("x", seq_len(q_fixed_effects))
+  z_names <- paste0("z", seq_len(p))
+  mi_data <- cbind(y, X, Z_obs) |> as.data.frame()
+  colnames(mi_data) <- c("y", x_names, z_names)
 
   #call with no iterations to get default settings
   mi_init <- mice(mi_data, maxit = 0, printFlag = FALSE)
 
   method_trunc <- mi_init$method
-  method_trunc[2:(p+1)] <- "leftcenslognorm"
+  z_cols <- (q_fixed_effects + 2):(q_fixed_effects + p + 1)
+  method_trunc[z_cols] <- "leftcenslognorm"
 
-  #only uses y to impute missing values, no covariates in current form and all z have some censoring
-  predictor_matrix_trunc <- matrix(0,nrow = p+1, ncol = p+1)
-  predictor_matrix_trunc[2:(p+1),1] <- 1
-  colnames(predictor_matrix_trunc) <- c("y", paste0("z", seq_len(p)))
-  rownames(predictor_matrix_trunc) <- c("y", paste0("z", seq_len(p)))
+  predictor_matrix_trunc <- matrix(0, nrow = ncol(mi_data), ncol = ncol(mi_data))
+  predictor_matrix_trunc[z_cols, c(1, seq_len(q_fixed_effects) + 1)] <- 1
+  colnames(predictor_matrix_trunc) <- colnames(mi_data)
+  rownames(predictor_matrix_trunc) <- colnames(mi_data)
 
   mids_trunc <- mice(
     data = mi_data,
@@ -815,14 +901,14 @@ for (seed in seed_vec){
     maxit = mi_maxit,
     method = method_trunc,
     predictorMatrix = predictor_matrix_trunc,
-    lod = c(NA, lod),
+    lod = c(rep(NA, q_fixed_effects + 1), lod),
     seed = mi_seed,
     printFlag = FALSE
   )
 
   Z_trunc_mi_raw_list <- complete(mids_trunc, action = "all") |>
     lapply(function(dat) {
-      dat[, paste0("z", seq_len(p)), drop = FALSE] |>
+      dat[, z_names, drop = FALSE] |>
         as.matrix()
     })
 
@@ -875,8 +961,8 @@ for (seed in seed_vec){
 
 
   ###### BKMR Uncensored ######
-  m_uncensored <- kmbayes(y = y, Z = Z_uncensored, iter = mcmc_iter,varsel = TRUE)
-  pred_uncensored <- SamplePred(m_uncensored, Znew = Z_uncensored)
+  m_uncensored <- kmbayes(y = y, Z = Z_uncensored, X = X, iter = mcmc_iter,varsel = TRUE)
+  pred_uncensored <- SamplePred(m_uncensored, Znew = Z_uncensored, Xnew = zero_fixed_effects(nrow(Z_uncensored)))
   results_uncens  <- mse_by_lod_count(h_true, pred_uncensored, group, p)
   results_uncens_first2  <- mse_by_first2_lod(h_true, pred_uncensored, Z_obs)
   coverage_uncens <- coverage_by_lod_count(h_true, pred_uncensored, group, p)
@@ -886,8 +972,8 @@ for (seed in seed_vec){
 
   ###### BKMR Single Imputation ######
 
-  m_impute <- kmbayes(y = y, Z = Z_impute, iter = mcmc_iter,varsel = TRUE)
-  pred_impute <- SamplePred(m_impute, Znew = Z_impute)
+  m_impute <- kmbayes(y = y, Z = Z_impute, X = X, iter = mcmc_iter,varsel = TRUE)
+  pred_impute <- SamplePred(m_impute, Znew = Z_impute, Xnew = zero_fixed_effects(nrow(Z_impute)))
   results_impute <- mse_by_lod_count(h_true, pred_impute, group, p)
   results_imputes_first2 <- mse_by_first2_lod(h_true, pred_impute, Z_obs)
   coverage_impute <- coverage_by_lod_count(h_true, pred_impute, group, p)
@@ -900,8 +986,8 @@ for (seed in seed_vec){
 
 
 
-  m_augmented <- kmbayes(y = y, Z = Z_aug, iter = mcmc_iter,varsel = TRUE)
-  pred_augmented <- SamplePred(m_augmented, Znew = Z_aug, Xnew = cbind(0))
+  m_augmented <- kmbayes(y = y, Z = Z_aug, X = X, iter = mcmc_iter,varsel = TRUE)
+  pred_augmented <- SamplePred(m_augmented, Znew = Z_aug, Xnew = zero_fixed_effects(nrow(Z_aug)))
   results_augmented <- mse_by_lod_count(h_true, pred_augmented, group, p)
   results_augmented_first2 <- mse_by_first2_lod(h_true, pred_augmented, Z_obs)
   coverage_augmented <- coverage_by_lod_count(h_true, pred_augmented, group, p)
@@ -923,8 +1009,8 @@ for (seed in seed_vec){
   n_complete <- nrow(Z_complete_case)
 
   if (n_complete >= 2) {
-    m_complete_case <- kmbayes( y = y_complete_case, Z = Z_complete_case, iter = mcmc_iter,varsel = TRUE)
-    pred_complete_case <- SamplePred( m_complete_case, Znew = Z_complete_case)
+    m_complete_case <- kmbayes( y = y_complete_case, Z = Z_complete_case, X = X_complete_case, iter = mcmc_iter,varsel = TRUE)
+    pred_complete_case <- SamplePred( m_complete_case, Znew = Z_complete_case, Xnew = zero_fixed_effects(nrow(Z_complete_case)))
     results_complete_case <- mse_by_lod_count(h_true[complete_case_idx],pred_complete_case,group_complete_case,p)
     results_complete_cases_first2 <- mse_by_first2_lod( h_true[complete_case_idx], pred_complete_case, Z_obs[complete_case_idx, , drop = FALSE])
     coverage_complete_case <- coverage_by_lod_count(
@@ -966,10 +1052,10 @@ for (seed in seed_vec){
 
   for (m in seq_len(m_imputations)) {
     Z_trunc_mi_list[[m]] <- scale( log(Z_trunc_mi_raw_list[[m]]), center = trunc_mi_center, scale = trunc_mi_scale)
-    fit_trunc_mi_list[[m]] <- kmbayes(y = y,Z = Z_trunc_mi_list[[m]],iter = mcmc_iter,varsel = TRUE)
+    fit_trunc_mi_list[[m]] <- kmbayes(y = y,Z = Z_trunc_mi_list[[m]],X = X,iter = mcmc_iter,varsel = TRUE)
     pip_trunc_mi_list[[m]] <- ExtractPIPs(fit_trunc_mi_list[[m]])[,2]
 
-    pred_trunc_mi_list[[m]] <- SamplePred(fit_trunc_mi_list[[m]],Znew = Z_trunc_mi_list[[m]])
+    pred_trunc_mi_list[[m]] <- SamplePred(fit_trunc_mi_list[[m]],Znew = Z_trunc_mi_list[[m]],Xnew = zero_fixed_effects(nrow(Z_trunc_mi_list[[m]])))
   }
 
   #used to get formatting
@@ -983,6 +1069,14 @@ for (seed in seed_vec){
   results_trunc_mi_first2 <- mse_by_first2_lod( h_true, pred_trunc_mi, Z_obs)
   coverage_trunc_mi <- coverage_by_lod_count(h_true, pred_trunc_mi, group, p)
   coverage_trunc_mi_first2 <- coverage_by_first2_lod(h_true, pred_trunc_mi, Z_obs)
+
+  fixed_effect_estimates <- dplyr::bind_rows(
+    summarize_fixed_effects(m_uncensored, "uncensored"),
+    summarize_fixed_effects(m_impute, "impute"),
+    summarize_fixed_effects(m_augmented, "augmented"),
+    summarize_fixed_effects(m_complete_case, "complete_case"),
+    summarize_fixed_effects_mi(fit_trunc_mi_list, "trunc_mi")
+  )
 
 
   ##### Contrast estimation #####
@@ -1063,7 +1157,9 @@ for (seed in seed_vec){
       h_func = h_func,
       mcmc_iter = mcmc_iter,
       m_imputations = m_imputations,
-      mi_maxit = mi_maxit
+      mi_maxit = mi_maxit,
+      q_fixed_effects = q_fixed_effects,
+      fixed_effect_beta = fixed_effect_beta
     ),
     logistics = list(
       run_time = Sys.time() - start_time,
@@ -1114,6 +1210,7 @@ for (seed in seed_vec){
         complete_case = sensspec_complete_case,
         trunc_mi = sensspec_trunc_mi
       ),
+      fixed_effects = fixed_effect_estimates,
       contrasts = contrast_results
     )
   )
