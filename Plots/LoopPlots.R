@@ -26,16 +26,16 @@ label_h_func <- function(x) {
 ############################## RMSE ##################################
 
 process_df <- mse_by_active_lod_burden_summary |>
-  filter(n==800)|>
-  filter(group != "Overall")|>
+  # filter(n==800)|>
+  # filter(group != "Overall")|>
   select(
     # n,
     lod_quantile,
-    exposure_dist,
+    # exposure_dist,
     mean_offset,
     scale,
     group,
-    h_func,
+    # h_func,
     any_of(c(
       "pooled_mse_uncensored",
       "pooled_mse_impute",
@@ -48,20 +48,20 @@ process_df <- mse_by_active_lod_burden_summary |>
 
 colnames(process_df)[(ncol(process_df) - 3):ncol(process_df)] <- c("Oracle", "Single Imputation", "Augmented", "Truncated MI")
 
-process_df$h_func <- label_h_func(process_df$h_func)
+# process_df$h_func <- label_h_func(process_df$h_func)
+
 
 # plot_data = nested_loop_base_data(
 #     process_df, 
-#     x = "n", steps = c("group","exposure_dist","scale"),
-#     grid_cols = "mean_offset", grid_rows = "lod_quantile",
-#     spu_x_shift = .2 * 1000
+#     x = "lod_quantile", steps = c("mean_offset","exposure_dist","scale"),
+#     grid_cols = "h_func", grid_rows = "group",
+#     spu_x_shift = .25
 # )
-
 
 plot_data = nested_loop_base_data(
     process_df, 
-    x = "lod_quantile", steps = c("mean_offset","exposure_dist","scale"),
-    grid_cols = "h_func", grid_rows = "group",
+    x = "lod_quantile", steps = c("mean_offset","scale"),
+    grid_rows = "group",
     spu_x_shift = .25
 )
 
@@ -106,7 +106,7 @@ p = add_processing(
     )
 )
 print(p)
-ggsave("RMSE.png",width = 10,height = 10)
+# ggsave("RMSE.png",width = 10,height = 10)
 
 ##############################
 
@@ -116,9 +116,9 @@ sens_plot_df <- combined_results$sensspec_summary_long |>
   select(
     n,
     lod_quantile,
-    exposure_dist,
+    # exposure_dist,
     mean_offset,
-    h_func,
+    # h_func,
     scale,
     threshold,
     method,
@@ -148,14 +148,14 @@ sens_plot_df <- combined_results$sensspec_summary_long |>
 specificity_df <- sens_plot_df |> 
   # filter(metric=="sensitivity") |> 
   filter(metric=="specificity") |> 
-  filter(n==800) |>
+  # filter(n==800) |>
   select(
   # n,
   lod_quantile,
-  exposure_dist,
+  # exposure_dist,
   mean_offset,
   scale,
-  h_func,
+  # h_func,
   # metric,
   threshold,
   uncensored,
@@ -172,10 +172,16 @@ colnames(specificity_df)[(length(colnames(specificity_df))-3):length(colnames(sp
 
 specificity_df$h_func <- label_h_func(specificity_df$h_func)
 
+# plot_data = nested_loop_base_data(
+#     specificity_df, 
+#     x = "lod_quantile", steps = c("mean_offset","exposure_dist","scale"),
+#     grid_rows = "threshold", grid_cols = "h_func",
+#     spu_x_shift = .3
+# )
 plot_data = nested_loop_base_data(
     specificity_df, 
-    x = "lod_quantile", steps = c("mean_offset","exposure_dist","scale"),
-    grid_rows = "threshold", grid_cols = "h_func",
+    x = "lod_quantile", steps = c("mean_offset","scale"),
+    grid_rows = "threshold",
     spu_x_shift = .3
 )
 
@@ -304,11 +310,11 @@ coverage_df <- coverage_by_active_lod_burden_summary |>
   select(
     n,
     lod_quantile,
-    exposure_dist,
+    # exposure_dist,
     group,
     mean_offset,
     scale,
-    h_func,
+    # h_func,
     method,
     empirical_coverage,
     mean_ci_width
@@ -332,7 +338,7 @@ coverage_df <- coverage_by_active_lod_burden_summary |>
 
 coverage_df <- coverage_df |> 
   filter(metric=="Coverage") |>
-  filter(n==800) |>
+  # filter(n==800) |>
   select(-'metric',-'n',-'complete_case') |>
   relocate(uncensored, impute, augmented, trunc_mi, .after = h_func )
 
@@ -342,10 +348,16 @@ colnames(coverage_df)[(col_len-3):col_len] <- c("Oracle", "Single Imputation","A
 coverage_df$h_func <- label_h_func(coverage_df$h_func)
 
 
+# plot_data = nested_loop_base_data(
+#     coverage_df, 
+#     x = "lod_quantile", steps = c("mean_offset","exposure_dist","scale"),
+#     grid_cols = "h_func", grid_rows = "group",
+#     spu_x_shift = .3
+# )
 plot_data = nested_loop_base_data(
     coverage_df, 
-    x = "lod_quantile", steps = c("mean_offset","exposure_dist","scale"),
-    grid_cols = "h_func", grid_rows = "group",
+    x = "lod_quantile", steps = c("mean_offset","scale"),
+    grid_rows = "group",
     spu_x_shift = .3
 )
 

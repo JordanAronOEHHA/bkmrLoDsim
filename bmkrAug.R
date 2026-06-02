@@ -89,7 +89,7 @@ if (is.na(array_id)){
 
   mcmc_iter <- 10
 } else {
-  seeds_per_job <- 4
+  seeds_per_job <- 2
 
   mcmc_iter <- 10000
 }
@@ -102,9 +102,9 @@ n <- 400
 lod_quantile <- 0.25
 exposure_dist <- "norm" # Options: norm unif gamma
 mean_offset <- 0
-h_func <- 2
-scale <- 0.5
-correlation <- "ind" # Options: ind within across
+h_func <- 4
+scale <- 0.75
+correlation <- "within" # Options: ind within across
 
 # Command line arguments (override defaults if included)
 args <- commandArgs(TRUE)
