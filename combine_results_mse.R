@@ -49,6 +49,86 @@ bind_method_tables <- function(result_list, metadata_tbl) {
   )
 }
 
+prediction_diagnostic_cols <- c(
+  "group",
+  "n_obs",
+  "mse",
+  "rmse",
+  "mean_bias",
+  "mae",
+  "sd_error",
+  "mean_posterior_sd",
+  "calibration_ratio",
+  "n_covered",
+  "empirical_coverage",
+  "n_lower_misses",
+  "n_upper_misses",
+  "lower_miss_rate",
+  "upper_miss_rate",
+  "mean_ci_width",
+  "mean_interval_score"
+)
+
+standardize_prediction_diagnostics <- function(data) {
+  if (nrow(data) == 0 && ncol(data) == 0) {
+    return(tibble())
+  }
+
+  missing_cols <- setdiff(prediction_diagnostic_cols, names(data))
+  for (col in missing_cols) {
+    data[[col]] <- NA
+  }
+
+  data |>
+    mutate(
+      rmse = ifelse(is.na(rmse) & !is.na(mse), sqrt(mse), rmse)
+    )
+}
+
+legacy_prediction_diagnostics <- function(mse_list, coverage_list) {
+  if (is.null(mse_list) && is.null(coverage_list)) {
+    return(NULL)
+  }
+
+  method_names <- union(names(mse_list), names(coverage_list))
+
+  stats::setNames(
+    lapply(method_names, function(method) {
+      mse_tbl <- if (!is.null(mse_list[[method]])) {
+        as_tibble(mse_list[[method]])
+      } else {
+        tibble()
+      }
+
+      coverage_tbl <- if (!is.null(coverage_list[[method]])) {
+        as_tibble(coverage_list[[method]])
+      } else {
+        tibble()
+      }
+
+      out <- if (nrow(mse_tbl) == 0) {
+        coverage_tbl
+      } else if (nrow(coverage_tbl) == 0) {
+        mse_tbl
+      } else {
+        full_join(
+          mse_tbl,
+          coverage_tbl,
+          by = "group",
+          suffix = c("_mse", "_coverage")
+        ) |>
+          mutate(
+            n_obs = coalesce(n_obs_mse, n_obs_coverage)
+          ) |>
+          select(-any_of(c("n_obs_mse", "n_obs_coverage")))
+      }
+
+      standardize_prediction_diagnostics(out)
+    }),
+    method_names
+  )
+}
+
 read_sim_result <- function(path) {
   counter  <<- counter  +1
   if (counter %% 500 ==0){print(counter)}
@@ -80,20 +160,55 @@ read_sim_result <- function(path) {
 
   metadata_tbl <- bind_cols(settings_tbl, logistics_tbl)
 
-  active_mse <- get_result_table(
+  active_prediction_diagnostics <- get_result_table(
     sim_result$results,
-    "mse_by_active_lod_burden",
-    fallback = "mse_by_first2_lod"
+    "prediction_diagnostics_by_active_lod_burden"
   )
 
-  active_coverage <- get_result_table(
-    sim_result$results,
-    "coverage_by_active_lod_burden",
-    fallback = "coverage_by_first2_lod"
-  )
+  if (is.null(active_prediction_diagnostics)) {
+    active_mse <- get_result_table(
+      sim_result$results,
+      "mse_by_active_lod_burden",
+      fallback = "mse_by_first2_lod"
+    )
 
-  mse_by_active_lod_burden <- bind_method_tables(active_mse, metadata_tbl)
-  coverage_by_active_lod_burden <- bind_method_tables(active_coverage, metadata_tbl)
+    active_coverage <- get_result_table(
+      sim_result$results,
+      "coverage_by_active_lod_burden",
+      fallback = "coverage_by_first2_lod"
+    )
+
+    active_prediction_diagnostics <- legacy_prediction_diagnostics(
+      active_mse,
+      active_coverage
+    )
+  }
+
+  prediction_diagnostics_by_active_lod_burden <- bind_method_tables(
+    active_prediction_diagnostics,
+    metadata_tbl
+  ) |>
+    standardize_prediction_diagnostics()
+
+  mse_by_active_lod_burden <- prediction_diagnostics_by_active_lod_burden |>
+    select(any_of(c(
+      names(metadata_tbl),
+      "method",
+      "group",
+      "n_obs",
+      "mse"
+    )))
+
+  coverage_by_active_lod_burden <- prediction_diagnostics_by_active_lod_burden |>
+    select(any_of(c(
+      names(metadata_tbl),
+      "method",
+      "group",
+      "n_obs",
+      "n_covered",
+      "empirical_coverage",
+      "mean_ci_width"
+    )))
 
   sensspec <- imap_dfr(
     sim_result$results$sensspec,
@@ -135,6 +250,7 @@ read_sim_result <- function(path) {
 
   list(
     file_metadata = metadata_tbl,
+    prediction_diagnostics_by_active_lod_burden = prediction_diagnostics_by_active_lod_burden,
     mse_by_active_lod_burden = mse_by_active_lod_burden,
     coverage_by_active_lod_burden = coverage_by_active_lod_burden,
     sensspec = sensspec,
@@ -152,6 +268,85 @@ pool_mse <- function(data, group_cols) {
       total_n_obs = sum(n_obs, na.rm = TRUE),
       pooled_mse = sqrt(sum(sse, na.rm = TRUE) / total_n_obs),
       .groups = "drop"
+    ) |>
+    arrange(across(all_of(group_cols)))
+}
+
+pool_prediction_diagnostics <- function(data, group_cols) {
+  if (nrow(data) == 0) {
+    return(tibble())
+  }
+
+  weighted_mean <- function(value, weight) {
+    valid <- !is.na(value) & !is.na(weight) & weight > 0
+    if (!any(valid)) {
+      return(NA_real_)
+    }
+
+    sum(value[valid] * weight[valid]) / sum(weight[valid])
+  }
+
+  sum_count <- function(count) {
+    valid <- !is.na(count)
+    if (!any(valid)) {
+      return(NA_real_)
+    }
+
+    sum(count[valid])
+  }
+
+  count_rate <- function(count, weight) {
+    valid <- !is.na(count) & !is.na(weight) & weight > 0
+    if (!any(valid)) {
+      return(NA_real_)
+    }
+
+    sum(count[valid]) / sum(weight[valid])
+  }
+
+  pooled_sd_error <- function(mean_bias, mse, weight) {
+    valid <- !is.na(mean_bias) & !is.na(mse) & !is.na(weight) & weight > 0
+    total_n <- sum(weight[valid])
+    if (total_n <= 1) {
+      return(NA_real_)
+    }
+
+    sum_error <- sum(mean_bias[valid] * weight[valid])
+    sum_sq_error <- sum(mse[valid] * weight[valid])
+    variance <- (sum_sq_error - (sum_error^2 / total_n)) / (total_n - 1)
+
+    sqrt(max(variance, 0))
+  }
+
+  data |>
+    group_by(across(all_of(group_cols))) |>
+    summarize(
+      runs = n_distinct(seed),
+      total_n_obs = sum(n_obs, na.rm = TRUE),
+      total_covered = sum_count(n_covered),
+      total_lower_misses = sum_count(n_lower_misses),
+      total_upper_misses = sum_count(n_upper_misses),
+      mse = weighted_mean(.data$mse, .data$n_obs),
+      mean_bias = weighted_mean(.data$mean_bias, .data$n_obs),
+      mae = weighted_mean(.data$mae, .data$n_obs),
+      sd_error = pooled_sd_error(.data$mean_bias, .data$mse, .data$n_obs),
+      mean_posterior_sd = weighted_mean(.data$mean_posterior_sd, .data$n_obs),
+      empirical_coverage = count_rate(n_covered, n_obs),
+      empirical_coverage_pct = 100 * empirical_coverage,
+      lower_miss_rate = count_rate(n_lower_misses, n_obs),
+      upper_miss_rate = count_rate(n_upper_misses, n_obs),
+      mean_ci_width = weighted_mean(.data$mean_ci_width, .data$n_obs),
+      mean_interval_score = weighted_mean(.data$mean_interval_score, .data$n_obs),
+      .groups = "drop"
+    ) |>
+    mutate(
+      rmse = sqrt(mse),
+      calibration_ratio = ifelse(
+        mean_posterior_sd > 0,
+        sd_error / mean_posterior_sd,
+        NA_real_
+      ),
+      .after = mean_posterior_sd
     ) |>
     arrange(across(all_of(group_cols)))
 }
@@ -281,6 +476,10 @@ pivot_sensspec_wider <- function(data) {
 
 combined_raw <- map(result_files, read_sim_result)
 combined_file_metadata <- map_dfr(combined_raw, "file_metadata")
+combined_prediction_diagnostics_by_active_lod_burden <- map_dfr(
+  combined_raw,
+  "prediction_diagnostics_by_active_lod_burden"
+)
 combined_mse_by_active_lod_burden <- map_dfr(combined_raw, "mse_by_active_lod_burden")
 combined_coverage_by_active_lod_burden <- map_dfr(combined_raw, "coverage_by_active_lod_burden")
 combined_sensspec <- map_dfr(combined_raw, "sensspec")
@@ -300,16 +499,47 @@ scenario_cols <- c(
   "mcmc_iter"
 )
 
-mse_by_active_lod_burden_summary <- pool_mse(
-  combined_mse_by_active_lod_burden,
-  c(scenario_cols, "method", "group")
-) |>
-  pivot_pooled_mse_wider()
-
-coverage_by_active_lod_burden_summary <- pool_coverage(
-  combined_coverage_by_active_lod_burden,
+prediction_diagnostics_by_active_lod_burden_summary <- pool_prediction_diagnostics(
+  combined_prediction_diagnostics_by_active_lod_burden,
   c(scenario_cols, "method", "group")
 )
+
+mse_by_active_lod_burden_summary <- prediction_diagnostics_by_active_lod_burden_summary |>
+  select(
+    all_of(c(scenario_cols, "method", "group")),
+    pooled_mse = rmse
+  ) |>
+  pivot_pooled_mse_wider()
+
+coverage_by_active_lod_burden_summary <- prediction_diagnostics_by_active_lod_burden_summary |>
+  select(
+    all_of(c(scenario_cols, "method", "group")),
+    runs,
+    total_n_obs,
+    total_covered,
+    empirical_coverage,
+    empirical_coverage_pct,
+    mean_ci_width
+  )
+
+prediction_diagnostics_by_active_lod_burden_wide <- prediction_diagnostics_by_active_lod_burden_summary |>
+  pivot_wider(
+    id_cols = all_of(c(scenario_cols, "group")),
+    names_from = method,
+    values_from = c(
+      rmse,
+      mean_bias,
+      mae,
+      empirical_coverage,
+      mean_ci_width,
+      mean_posterior_sd,
+      calibration_ratio,
+      lower_miss_rate,
+      upper_miss_rate,
+      mean_interval_score
+    ),
+    names_sep = "_"
+  )
 
 sensspec_summary_long <- pool_sensspec(
   combined_sensspec,
@@ -354,11 +584,14 @@ runs_by_method <- pool_mse(
 
 combined_results <- list(
   files = combined_file_metadata,
+  combined_prediction_diagnostics_by_active_lod_burden = combined_prediction_diagnostics_by_active_lod_burden,
   combined_mse_by_active_lod_burden = combined_mse_by_active_lod_burden,
   combined_coverage_by_active_lod_burden = combined_coverage_by_active_lod_burden,
   combined_sensspec = combined_sensspec,
   combined_pips = combined_pips,
   combined_contrasts = combined_contrasts,
+  prediction_diagnostics_by_active_lod_burden_summary = prediction_diagnostics_by_active_lod_burden_summary,
+  prediction_diagnostics_by_active_lod_burden_wide = prediction_diagnostics_by_active_lod_burden_wide,
   mse_by_active_lod_burden_summary = mse_by_active_lod_burden_summary,
   coverage_by_active_lod_burden_summary = coverage_by_active_lod_burden_summary,
   sensspec_summary_long = sensspec_summary_long,

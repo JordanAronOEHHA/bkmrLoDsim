@@ -150,9 +150,6 @@ mi_maxit <- 10
 
 #### Functions #####
 
-##### MSE functions #####
-mse <- function(true, pred) mean((true - apply(pred, 2, mean))^2)
-
 active_lod_group_levels <- function() {
   n_active <- length(h_config$active_idx)
   active_below_count <- seq.int(0L, n_active)
@@ -188,66 +185,76 @@ active_lod_template <- function() {
   tibble::tibble(group = active_lod_group_levels())
 }
 
-mse_by_active_lod_burden <- function(h_true, pred, Z_obs) {
-  group <- active_lod_group(Z_obs)
+prediction_diagnostics_by_active_lod_burden <- function(h_true, pred, Z_obs, alpha = 0.05) {
+  pred <- as.matrix(pred)
+  if (ncol(pred) != length(h_true)) {
+    stop("Prediction matrix must have one column per true h value")
+  }
 
-  pred_mean <- colMeans(pred)
-
-  observed <- tibble::tibble(
-    group = group,
-    h_true = h_true,
-    pred_mean = pred_mean
-  ) |>
-    dplyr::summarise(
-      n_obs = dplyr::n(),
-      mse = mean((h_true - pred_mean)^2),
-      .by = group
-    )
-
-  template <- active_lod_template()
-
-  by_group <- template |>
-    dplyr::left_join(observed, by = "group") |>
-    dplyr::mutate(
-      n_obs = dplyr::coalesce(n_obs, 0L),
-      mse = ifelse(n_obs == 0L, NA_real_, mse)
-    )
-
-  overall <- tibble::tibble(
-    group = "Overall",
-    n_obs = length(h_true),
-    mse = mean((h_true - pred_mean)^2)
-  )
-
-  dplyr::bind_rows(by_group, overall)
-}
-
-coverage_by_active_lod_burden <- function(h_true, pred, Z_obs) {
   group <- active_lod_group(Z_obs)
 
   ci <- apply(
     pred,
     2,
     quantile,
-    probs = c(0.025, 0.975),
+    probs = c(alpha / 2, 1 - alpha / 2),
     na.rm = TRUE
   )
 
-  covered <- h_true >= ci[1, ] & h_true <= ci[2, ]
-  ci_width <- ci[2, ] - ci[1, ]
+  pred_mean <- colMeans(pred, na.rm = TRUE)
+  pred_sd <- apply(pred, 2, sd, na.rm = TRUE)
+  ci_low <- ci[1, ]
+  ci_high <- ci[2, ]
+  ci_width <- ci_high - ci_low
+  error <- pred_mean - h_true
+  covered <- h_true >= ci_low & h_true <= ci_high
+  lower_miss <- h_true < ci_low
+  upper_miss <- h_true > ci_high
+  interval_score <- ci_width +
+    (2 / alpha) * (ci_low - h_true) * lower_miss +
+    (2 / alpha) * (h_true - ci_high) * upper_miss
+
+  summarize_diagnostics <- function(data) {
+    data |>
+      dplyr::summarise(
+        n_obs = dplyr::n(),
+        mse = mean(error^2, na.rm = TRUE),
+        rmse = sqrt(mse),
+        mean_bias = mean(error, na.rm = TRUE),
+        mae = mean(abs(error), na.rm = TRUE),
+        sd_error = sd(error, na.rm = TRUE),
+        mean_posterior_sd = mean(pred_sd, na.rm = TRUE),
+        n_covered = sum(covered, na.rm = TRUE),
+        empirical_coverage = mean(covered, na.rm = TRUE),
+        n_lower_misses = sum(lower_miss, na.rm = TRUE),
+        n_upper_misses = sum(upper_miss, na.rm = TRUE),
+        lower_miss_rate = mean(lower_miss, na.rm = TRUE),
+        upper_miss_rate = mean(upper_miss, na.rm = TRUE),
+        mean_ci_width = mean(ci_width, na.rm = TRUE),
+        mean_interval_score = mean(interval_score, na.rm = TRUE),
+        .by = group
+      ) |>
+      dplyr::mutate(
+        calibration_ratio = ifelse(
+          mean_posterior_sd > 0,
+          sd_error / mean_posterior_sd,
+          NA_real_
+        ),
+        .after = mean_posterior_sd
+      )
+  }
 
   observed <- tibble::tibble(
     group = group,
+    error = error,
+    pred_sd = pred_sd,
     covered = covered,
-    ci_width = ci_width
+    lower_miss = lower_miss,
+    upper_miss = upper_miss,
+    ci_width = ci_width,
+    interval_score = interval_score
   ) |>
-    dplyr::summarise(
-      n_obs = dplyr::n(),
-      n_covered = sum(covered, na.rm = TRUE),
-      empirical_coverage = mean(covered, na.rm = TRUE),
-      mean_ci_width = mean(ci_width, na.rm = TRUE),
-      .by = group
-    )
+    summarize_diagnostics()
 
   template <- active_lod_template()
 
@@ -256,38 +263,62 @@ coverage_by_active_lod_burden <- function(h_true, pred, Z_obs) {
     dplyr::mutate(
       n_obs = dplyr::coalesce(n_obs, 0L),
       n_covered = dplyr::coalesce(n_covered, 0L),
-      empirical_coverage = ifelse(n_obs == 0L, NA_real_, empirical_coverage),
-      mean_ci_width = ifelse(n_obs == 0L, NA_real_, mean_ci_width)
+      n_lower_misses = dplyr::coalesce(n_lower_misses, 0L),
+      n_upper_misses = dplyr::coalesce(n_upper_misses, 0L),
+      dplyr::across(
+        c(
+          mse,
+          rmse,
+          mean_bias,
+          mae,
+          sd_error,
+          mean_posterior_sd,
+          calibration_ratio,
+          empirical_coverage,
+          lower_miss_rate,
+          upper_miss_rate,
+          mean_ci_width,
+          mean_interval_score
+        ),
+        \(x) ifelse(n_obs == 0L, NA_real_, x)
+      )
     )
 
   overall <- tibble::tibble(
     group = "Overall",
-    n_obs = length(h_true),
-    n_covered = sum(covered, na.rm = TRUE),
-    empirical_coverage = mean(covered, na.rm = TRUE),
-    mean_ci_width = mean(ci_width, na.rm = TRUE)
-  )
+    error = error,
+    pred_sd = pred_sd,
+    covered = covered,
+    lower_miss = lower_miss,
+    upper_miss = upper_miss,
+    ci_width = ci_width,
+    interval_score = interval_score
+  ) |>
+    summarize_diagnostics()
 
   dplyr::bind_rows(by_group, overall)
 }
 
-empty_mse_by_active_lod_burden <- function() {
+empty_prediction_diagnostics_by_active_lod_burden <- function() {
   grouping <- c(active_lod_template()$group, "Overall")
   tibble::tibble(
     group = grouping,
     n_obs = 0L,
-    mse = NA_real_
-  )
-}
-
-empty_coverage_by_active_lod_burden <- function() {
-  grouping <- c(active_lod_template()$group, "Overall")
-  tibble::tibble(
-    group = grouping,
-    n_obs = 0L,
+    mse = NA_real_,
+    rmse = NA_real_,
+    mean_bias = NA_real_,
+    mae = NA_real_,
+    sd_error = NA_real_,
+    mean_posterior_sd = NA_real_,
+    calibration_ratio = NA_real_,
     n_covered = 0L,
     empirical_coverage = NA_real_,
-    mean_ci_width = NA_real_
+    n_lower_misses = 0L,
+    n_upper_misses = 0L,
+    lower_miss_rate = NA_real_,
+    upper_miss_rate = NA_real_,
+    mean_ci_width = NA_real_,
+    mean_interval_score = NA_real_
   )
 }
 
@@ -967,14 +998,17 @@ for (seed in seed_vec){
 
 
   ###############################################################################
-  #Model calls and MSE calculation
+  #Model calls and prediction diagnostics
 
 
   ###### BKMR Uncensored ######
   m_uncensored <- kmbayes(y = y, Z = Z_uncensored, X = X, iter = mcmc_iter,varsel = TRUE)
   pred_uncensored <- SamplePred(m_uncensored, Znew = Z_uncensored, Xnew = zero_fixed_effects(nrow(Z_uncensored)))
-  results_uncens_active  <- mse_by_active_lod_burden(h_true, pred_uncensored, Z_obs)
-  coverage_uncens_active <- coverage_by_active_lod_burden(h_true, pred_uncensored, Z_obs)
+  diagnostics_uncens_active <- prediction_diagnostics_by_active_lod_burden(
+    h_true,
+    pred_uncensored,
+    Z_obs
+  )
   pip_uncensored <- ExtractPIPs(m_uncensored)
   sensspec_uncensored <- calc_sens_spec(pip_uncensored)
 
@@ -982,8 +1016,11 @@ for (seed in seed_vec){
 
   m_impute <- kmbayes(y = y, Z = Z_impute, X = X, iter = mcmc_iter,varsel = TRUE)
   pred_impute <- SamplePred(m_impute, Znew = Z_impute, Xnew = zero_fixed_effects(nrow(Z_impute)))
-  results_impute_active <- mse_by_active_lod_burden(h_true, pred_impute, Z_obs)
-  coverage_impute_active <- coverage_by_active_lod_burden(h_true, pred_impute, Z_obs)
+  diagnostics_impute_active <- prediction_diagnostics_by_active_lod_burden(
+    h_true,
+    pred_impute,
+    Z_obs
+  )
   pip_impute <- ExtractPIPs(m_impute)
   sensspec_impute <- calc_sens_spec(pip_impute)
 
@@ -994,8 +1031,11 @@ for (seed in seed_vec){
 
   m_augmented <- kmbayes(y = y, Z = Z_aug, X = X, iter = mcmc_iter,varsel = TRUE)
   pred_augmented <- SamplePred(m_augmented, Znew = Z_aug, Xnew = zero_fixed_effects(nrow(Z_aug)))
-  results_augmented_active <- mse_by_active_lod_burden(h_true, pred_augmented, Z_obs)
-  coverage_augmented_active <- coverage_by_active_lod_burden(h_true, pred_augmented, Z_obs)
+  diagnostics_augmented_active <- prediction_diagnostics_by_active_lod_burden(
+    h_true,
+    pred_augmented,
+    Z_obs
+  )
 
 
   augmented_pips <- extract_augmented_chemical_pips(m_augmented, p = p)
@@ -1015,8 +1055,7 @@ for (seed in seed_vec){
   if (n_complete >= 2) {
     m_complete_case <- kmbayes( y = y_complete_case, Z = Z_complete_case, X = X_complete_case, iter = mcmc_iter,varsel = TRUE)
     pred_complete_case <- SamplePred( m_complete_case, Znew = Z_complete_case, Xnew = zero_fixed_effects(nrow(Z_complete_case)))
-    results_complete_case_active <- mse_by_active_lod_burden( h_true[complete_case_idx], pred_complete_case, Z_obs[complete_case_idx, , drop = FALSE])
-    coverage_complete_case_active <- coverage_by_active_lod_burden(
+    diagnostics_complete_case_active <- prediction_diagnostics_by_active_lod_burden(
       h_true[complete_case_idx],
       pred_complete_case,
       Z_obs[complete_case_idx, , drop = FALSE]
@@ -1028,8 +1067,7 @@ for (seed in seed_vec){
     m_complete_case <- NULL
     pred_complete_case <- NULL
 
-    results_complete_case_active <- empty_mse_by_active_lod_burden()
-    coverage_complete_case_active <- empty_coverage_by_active_lod_burden()
+    diagnostics_complete_case_active <- empty_prediction_diagnostics_by_active_lod_burden()
 
     pip_complete_case <- pip_uncensored
     pip_complete_case[,2] <- NA
@@ -1060,8 +1098,11 @@ for (seed in seed_vec){
 
   pred_trunc_mi <- do.call(rbind, pred_trunc_mi_list)
 
-  results_trunc_mi_active <- mse_by_active_lod_burden( h_true, pred_trunc_mi, Z_obs)
-  coverage_trunc_mi_active <- coverage_by_active_lod_burden(h_true, pred_trunc_mi, Z_obs)
+  diagnostics_trunc_mi_active <- prediction_diagnostics_by_active_lod_burden(
+    h_true,
+    pred_trunc_mi,
+    Z_obs
+  )
 
   fixed_effect_estimates <- dplyr::bind_rows(
     summarize_fixed_effects(m_uncensored, "uncensored"),
@@ -1163,19 +1204,12 @@ for (seed in seed_vec){
       run_mem = sum(gc()[, 6])
     ),
     results = list(
-      mse_by_active_lod_burden = list(
-        uncensored = results_uncens_active,
-        impute = results_impute_active,
-        augmented = results_augmented_active,
-        complete_case = results_complete_case_active,
-        trunc_mi = results_trunc_mi_active
-      ),
-      coverage_by_active_lod_burden = list(
-        uncensored = coverage_uncens_active,
-        impute = coverage_impute_active,
-        augmented = coverage_augmented_active,
-        complete_case = coverage_complete_case_active,
-        trunc_mi = coverage_trunc_mi_active
+      prediction_diagnostics_by_active_lod_burden = list(
+        uncensored = diagnostics_uncens_active,
+        impute = diagnostics_impute_active,
+        augmented = diagnostics_augmented_active,
+        complete_case = diagnostics_complete_case_active,
+        trunc_mi = diagnostics_trunc_mi_active
       ),
       pips = list(
         uncensored = pip_uncensored,
