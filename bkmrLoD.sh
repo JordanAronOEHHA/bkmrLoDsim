@@ -1,7 +1,7 @@
 #!/bin/bash -l
 #SBATCH --nodes=1
 #SBATCH --ntasks-per-node=1
-#SBATCH --array=1-25
+#SBATCH --array=1-50
 #SBATCH --mail-type=NONE
 #SBATCH --mail-user=aron0064@umn.edu
 #SBATCH -A mfiecas
@@ -13,7 +13,7 @@ exposure_dist=$3
 mean_offset=$4
 h_func=$5
 scale=$6
-correlation=${7:-ind}
+correlation=$7
 date
 path="/projects/standard/mfiecas/aron0064/bkmrLoDsim"
 cd $path/Routputs
