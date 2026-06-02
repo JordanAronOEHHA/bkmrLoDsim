@@ -7,12 +7,14 @@ for size in 400 800; do
         time_limit="32:00:00"
         mem_gb="5"
     fi
-    for h_func in 2 3; do
+    for h_func in 2 3 4; do
         for lod_quantile in 0.25 0.50 0.75; do
             for exposure_dist in norm unif; do
                 for mean_offset in -1 0 1; do
                     for scale in 0.5 1.5; do
-                        sbatch --time="$time_limit" --mem="${mem_gb}gb" bkmrLoD.sh $size $lod_quantile $exposure_dist $mean_offset $h_func $scale
+                        for correlation in ind; do
+                            sbatch --time="$time_limit" --mem="${mem_gb}gb" bkmrLoD.sh $size $lod_quantile $exposure_dist $mean_offset $h_func $scale $correlation
+                        done
                     done
                 done
             done

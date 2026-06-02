@@ -17,12 +17,60 @@ if (length(result_files) == 0) {
 }
 
 counter  <- 0
+
+get_result_table <- function(results, name, fallback = NULL) {
+  if (!is.null(results[[name]])) {
+    return(results[[name]])
+  }
+
+  if (!is.null(fallback) && !is.null(results[[fallback]])) {
+    return(results[[fallback]])
+  }
+
+  NULL
+}
+
+bind_method_tables <- function(result_list, metadata_tbl) {
+  if (is.null(result_list)) {
+    return(tibble())
+  }
+
+  imap_dfr(
+    result_list,
+    \(result_tbl, method) {
+      bind_cols(
+        metadata_tbl,
+        as_tibble(result_tbl) |>
+          mutate(
+            method = method
+          )
+      )
+    }
+  )
+}
+
 read_sim_result <- function(path) {
   counter  <<- counter  +1
   if (counter %% 500 ==0){print(counter)}
   sim_result <- readRDS(path)
 
-  settings_tbl <- as_tibble(sim_result$settings)
+  settings <- purrr::map(sim_result$settings, function(x) {
+    if (length(x) == 0) {
+      return(NA)
+    }
+
+    if (length(x) == 1) {
+      return(x)
+    }
+
+    paste(x, collapse = ",")
+  })
+
+  if (is.null(settings$correlation)) {
+    settings$correlation <- "ind"
+  }
+
+  settings_tbl <- as_tibble(settings)
 
   logistics_tbl <- tibble(
     run_time = as.numeric(sim_result$logistics$run_time, units = "mins"),
@@ -32,65 +80,20 @@ read_sim_result <- function(path) {
 
   metadata_tbl <- bind_cols(settings_tbl, logistics_tbl)
 
-  mse_by_lod_count <- imap_dfr(
-    sim_result$results$mse_by_lod_count,
-    \(result_tbl, method) {
-      bind_cols(
-        metadata_tbl,
-        as_tibble(result_tbl) |>
-          mutate(
-            method = method
-          )
-      )
-    }
+  active_mse <- get_result_table(
+    sim_result$results,
+    "mse_by_active_lod_burden",
+    fallback = "mse_by_first2_lod"
   )
 
-  mse_by_first2_lod <- imap_dfr(
-    sim_result$results$mse_by_first2_lod,
-    \(result_tbl, method) {
-      bind_cols(
-        metadata_tbl,
-        as_tibble(result_tbl) |>
-          mutate(
-            method = method
-          )
-      )
-    }
+  active_coverage <- get_result_table(
+    sim_result$results,
+    "coverage_by_active_lod_burden",
+    fallback = "coverage_by_first2_lod"
   )
 
-  coverage_by_lod_count <- if (is.null(sim_result$results$coverage_by_lod_count)) {
-    tibble()
-  } else {
-    imap_dfr(
-      sim_result$results$coverage_by_lod_count,
-      \(result_tbl, method) {
-        bind_cols(
-          metadata_tbl,
-          as_tibble(result_tbl) |>
-            mutate(
-              method = method
-            )
-        )
-      }
-    )
-  }
-
-  coverage_by_first2_lod <- if (is.null(sim_result$results$coverage_by_first2_lod)) {
-    tibble()
-  } else {
-    imap_dfr(
-      sim_result$results$coverage_by_first2_lod,
-      \(result_tbl, method) {
-        bind_cols(
-          metadata_tbl,
-          as_tibble(result_tbl) |>
-            mutate(
-              method = method
-            )
-        )
-      }
-    )
-  }
+  mse_by_active_lod_burden <- bind_method_tables(active_mse, metadata_tbl)
+  coverage_by_active_lod_burden <- bind_method_tables(active_coverage, metadata_tbl)
 
   sensspec <- imap_dfr(
     sim_result$results$sensspec,
@@ -132,10 +135,8 @@ read_sim_result <- function(path) {
 
   list(
     file_metadata = metadata_tbl,
-    mse_by_lod_count = mse_by_lod_count,
-    mse_by_first2_lod = mse_by_first2_lod,
-    coverage_by_lod_count = coverage_by_lod_count,
-    coverage_by_first2_lod = coverage_by_first2_lod,
+    mse_by_active_lod_burden = mse_by_active_lod_burden,
+    coverage_by_active_lod_burden = coverage_by_active_lod_burden,
     sensspec = sensspec,
     pips = pips,
     contrasts = contrasts
@@ -261,7 +262,7 @@ add_contrast_family <- function(data) {
 pivot_pooled_mse_wider <- function(data) {
   data |>
     pivot_wider(
-      id_cols = c(n, p, lod_quantile, exposure_dist, mean_offset, h_func, scale, mcmc_iter, group),
+      id_cols = c(n, p, lod_quantile, exposure_dist, correlation, mean_offset, h_func, scale, mcmc_iter, group),
       names_from = method,
       values_from = pooled_mse,
       names_prefix = "pooled_mse_"
@@ -271,7 +272,7 @@ pivot_pooled_mse_wider <- function(data) {
 pivot_sensspec_wider <- function(data) {
   data |>
     pivot_wider(
-      id_cols = c(n, p, lod_quantile, exposure_dist, mean_offset, h_func, scale, mcmc_iter, threshold),
+      id_cols = c(n, p, lod_quantile, exposure_dist, correlation, mean_offset, h_func, scale, mcmc_iter, threshold),
       names_from = method,
       values_from = c(mean_sensitivity, mean_specificity),
       names_sep = "_"
@@ -280,10 +281,8 @@ pivot_sensspec_wider <- function(data) {
 
 combined_raw <- map(result_files, read_sim_result)
 combined_file_metadata <- map_dfr(combined_raw, "file_metadata")
-combined_mse_by_lod_count <- map_dfr(combined_raw, "mse_by_lod_count")
-combined_mse_by_first2_lod <- map_dfr(combined_raw, "mse_by_first2_lod")
-combined_coverage_by_lod_count <- map_dfr(combined_raw, "coverage_by_lod_count")
-combined_coverage_by_first2_lod <- map_dfr(combined_raw, "coverage_by_first2_lod")
+combined_mse_by_active_lod_burden <- map_dfr(combined_raw, "mse_by_active_lod_burden")
+combined_coverage_by_active_lod_burden <- map_dfr(combined_raw, "coverage_by_active_lod_burden")
 combined_sensspec <- map_dfr(combined_raw, "sensspec")
 combined_pips <- map_dfr(combined_raw, "pips")
 combined_contrasts <- map_dfr(combined_raw, "contrasts") |>
@@ -294,31 +293,21 @@ scenario_cols <- c(
   "p",
   "lod_quantile",
   "exposure_dist",
+  "correlation",
   "mean_offset",
   "h_func",
   "scale",
   "mcmc_iter"
 )
 
-mse_by_lod_count_summary <- pool_mse(
-  combined_mse_by_lod_count,
+mse_by_active_lod_burden_summary <- pool_mse(
+  combined_mse_by_active_lod_burden,
   c(scenario_cols, "method", "group")
 ) |>
   pivot_pooled_mse_wider()
 
-mse_by_first2_lod_summary <- pool_mse(
-  combined_mse_by_first2_lod,
-  c(scenario_cols, "method", "group")
-) |>
-  pivot_pooled_mse_wider()
-
-coverage_by_lod_count_summary <- pool_coverage(
-  combined_coverage_by_lod_count,
-  c(scenario_cols, "method", "group")
-)
-
-coverage_by_first2_lod_summary <- pool_coverage(
-  combined_coverage_by_first2_lod,
+coverage_by_active_lod_burden_summary <- pool_coverage(
+  combined_coverage_by_active_lod_burden,
   c(scenario_cols, "method", "group")
 )
 
@@ -348,14 +337,15 @@ logistics_summary |>
 )
 
 runs_by_method <- pool_mse(
-  combined_mse_by_lod_count |>
-    filter(method != "complete_case"),
+  combined_mse_by_active_lod_burden |>
+    filter(group == "Overall", method != "complete_case"),
   c(scenario_cols)
 ) |>
   select(
     n,
     lod_quantile,
     exposure_dist,
+    correlation,
     mean_offset,
     h_func,
     scale,
@@ -364,17 +354,13 @@ runs_by_method <- pool_mse(
 
 combined_results <- list(
   files = combined_file_metadata,
-  combined_mse_by_lod_count = combined_mse_by_lod_count,
-  combined_mse_by_first2_lod = combined_mse_by_first2_lod,
-  combined_coverage_by_lod_count = combined_coverage_by_lod_count,
-  combined_coverage_by_first2_lod = combined_coverage_by_first2_lod,
+  combined_mse_by_active_lod_burden = combined_mse_by_active_lod_burden,
+  combined_coverage_by_active_lod_burden = combined_coverage_by_active_lod_burden,
   combined_sensspec = combined_sensspec,
   combined_pips = combined_pips,
   combined_contrasts = combined_contrasts,
-  mse_by_lod_count_summary = mse_by_lod_count_summary,
-  mse_by_first2_lod_summary = mse_by_first2_lod_summary,
-  coverage_by_lod_count_summary = coverage_by_lod_count_summary,
-  coverage_by_first2_lod_summary = coverage_by_first2_lod_summary,
+  mse_by_active_lod_burden_summary = mse_by_active_lod_burden_summary,
+  coverage_by_active_lod_burden_summary = coverage_by_active_lod_burden_summary,
   sensspec_summary_long = sensspec_summary_long,
   sensspec_summary = sensspec_summary,
   contrast_summary = contrast_summary

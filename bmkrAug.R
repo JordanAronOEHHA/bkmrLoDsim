@@ -5,6 +5,65 @@ zero_fixed_effects <- function(n_rows) {
   matrix(0, nrow = n_rows, ncol = q_fixed_effects)
 }
 
+get_h_config <- function(h_func) {
+  h_func <- as.integer(h_func)
+
+  configs <- list(
+    `1` = list(
+      id = 1L,
+      p = 4L,
+      active_idx = 1L,
+      label = "Single Active",
+      h_fun = function(Z_log, mean_offset, scale) {
+        4 * plogis(Z_log[, 1], location = mean_offset, scale = scale)
+      }
+    ),
+    `2` = list(
+      id = 2L,
+      p = 4L,
+      active_idx = 1:2,
+      label = "No Interaction",
+      h_fun = function(Z_log, mean_offset, scale) {
+        2 * plogis(Z_log[, 1], location = mean_offset, scale = scale) +
+          2 * plogis(Z_log[, 2], location = mean_offset, scale = scale)
+      }
+    ),
+    `3` = list(
+      id = 3L,
+      p = 4L,
+      active_idx = 1:2,
+      label = "Interaction",
+      h_fun = function(Z_log, mean_offset, scale) {
+        4 * plogis(
+          0.5 * (Z_log[, 1] + Z_log[, 2]),
+          location = mean_offset,
+          scale = scale
+        )
+      }
+    ),
+    `4` = list(
+      id = 4L,
+      p = 8L,
+      active_idx = 1:4,
+      label = "Four Active",
+      h_fun = function(Z_log, mean_offset, scale) {
+        rowSums(plogis(
+          Z_log[, 1:4, drop = FALSE],
+          location = mean_offset,
+          scale = scale
+        ))
+      }
+    )
+  )
+
+  config <- configs[[as.character(h_func)]]
+  if (is.null(config)) {
+    stop("Unsupported h_func")
+  }
+
+  config
+}
+
 
 start_time <- Sys.time()
 
@@ -45,6 +104,7 @@ exposure_dist <- "norm" # Options: norm unif gamma
 mean_offset <- 0
 h_func <- 2
 scale <- 0.5
+correlation <- "ind" # Options: ind within across
 
 # Command line arguments (override defaults if included)
 args <- commandArgs(TRUE)
@@ -54,6 +114,14 @@ if (length(args) >= 3) exposure_dist <- args[3]
 if (length(args) >= 4) mean_offset <- as.numeric(args[4])
 if (length(args) >= 5) h_func <- as.numeric(args[5])
 if (length(args) >= 6) scale <- as.numeric(args[6])
+if (length(args) >= 7) correlation <- args[7]
+
+correlation <- match.arg(correlation, c("ind", "within", "across"))
+if (correlation != "ind" && exposure_dist != "norm") {
+  stop("correlation = 'within' or 'across' is currently implemented only for exposure_dist = 'norm'")
+}
+
+h_config <- get_h_config(h_func)
 
 #prints out current settings for reference when looking at results
 print("Simulation Settings:")
@@ -63,12 +131,16 @@ print(paste("lod_quantile:", lod_quantile))
 print(paste("exposure_dist:", exposure_dist))
 print(paste("mean_offset:", mean_offset))
 print(paste("h_func:", h_func))
+print(paste("h_label:", h_config$label))
 print(paste("scale:", scale))
+print(paste("correlation:", correlation))
 print(paste("q_fixed_effects:", q_fixed_effects))
 print(paste("fixed_effect_beta:", paste(fixed_effect_beta, collapse = ",")))
 
 ##### Hyper Parameters #####
-p <- 4
+p <- h_config$p
+print(paste("p:", p))
+print(paste("active_idx:", paste(h_config$active_idx, collapse = ",")))
 
 #number of completed datasets
 m_imputations <- 5
@@ -81,102 +153,43 @@ mi_maxit <- 10
 ##### MSE functions #####
 mse <- function(true, pred) mean((true - apply(pred, 2, mean))^2)
 
-mse_by_lod_count <- function(h_true, pred, group, p_val = NULL) {
-  if (is.null(p_val)) p_val <- max(group)
+active_lod_group_levels <- function() {
+  n_active <- length(h_config$active_idx)
+  active_below_count <- seq.int(0L, n_active)
+  active_above_count <- n_active - active_below_count
 
-  results <- lapply(0:p_val, function(k) {
-    idx <- which(group == k)
-
-    if (length(idx) > 0) {
-      data.frame(
-        group = k,
-        n_obs = length(idx),
-        mse = mse(h_true[idx], pred[, idx, drop = FALSE])
-      )
-    } else {
-      data.frame(
-        group = k,
-        n_obs = 0L,
-        mse = NA_real_
-      )
-    }
-  }) |>
-    dplyr::bind_rows()
-
-  total_row <- data.frame(
-    group = NA,
-    n_obs = length(h_true),
-    mse = mse(h_true, pred)
+  paste0(
+    active_above_count,
+    " active above / ",
+    active_below_count,
+    " below LoD"
   )
-
-  dplyr::bind_rows(results, total_row)
 }
 
-coverage_by_lod_count <- function(h_true, pred, group, p_val = NULL) {
-  if (is.null(p_val)) p_val <- max(group)
-
-  ci <- apply(
-    pred,
-    2,
-    quantile,
-    probs = c(0.025, 0.975),
-    na.rm = TRUE
-  )
-
-  covered <- h_true >= ci[1, ] & h_true <= ci[2, ]
-  ci_width <- ci[2, ] - ci[1, ]
-
-  observed <- tibble::tibble(
-    group = group,
-    covered = covered,
-    ci_width = ci_width
-  ) |>
-    dplyr::summarise(
-      n_obs = dplyr::n(),
-      n_covered = sum(covered, na.rm = TRUE),
-      empirical_coverage = mean(covered, na.rm = TRUE),
-      mean_ci_width = mean(ci_width, na.rm = TRUE),
-      .by = group
-    )
-
-  by_group <- tibble::tibble(group = 0:p_val) |>
-    dplyr::left_join(observed, by = "group") |>
-    dplyr::mutate(
-      n_obs = dplyr::coalesce(n_obs, 0L),
-      n_covered = dplyr::coalesce(n_covered, 0L),
-      empirical_coverage = ifelse(n_obs == 0L, NA_real_, empirical_coverage),
-      mean_ci_width = ifelse(n_obs == 0L, NA_real_, mean_ci_width)
-    )
-
-  overall <- tibble::tibble(
-    group = NA,
-    n_obs = length(h_true),
-    n_covered = sum(covered, na.rm = TRUE),
-    empirical_coverage = mean(covered, na.rm = TRUE),
-    mean_ci_width = mean(ci_width, na.rm = TRUE)
-  )
-
-  dplyr::bind_rows(by_group, overall)
-}
-
-mse_by_first2_lod <- function(h_true, pred, Z_obs) {
-  z1_below <- is.na(Z_obs[, 1])
-  z2_below <- is.na(Z_obs[, 2])
-
-  if (h_func == 2 | h_func == 3){
-    group <- dplyr::case_when(
-      !z1_below & !z2_below ~ "++",
-      z1_below & !z2_below ~ "+-",
-      !z1_below & z2_below ~ "+-",
-      z1_below & z2_below ~ "--"
-    )
-  } else if (h_func == 1){
-    group <- dplyr::case_when(
-      !z1_below ~ "+",
-      z1_below  ~ "-",
-    )
+active_lod_group <- function(Z_obs) {
+  active_idx <- h_config$active_idx
+  if (max(active_idx) > ncol(Z_obs)) {
+    stop("Active chemical index exceeds number of exposure columns")
   }
-  
+
+  n_active <- length(active_idx)
+  active_below_count <- rowSums(is.na(Z_obs[, active_idx, drop = FALSE]))
+  active_above_count <- n_active - active_below_count
+
+  paste0(
+    active_above_count,
+    " active above / ",
+    active_below_count,
+    " below LoD"
+  )
+}
+
+active_lod_template <- function() {
+  tibble::tibble(group = active_lod_group_levels())
+}
+
+mse_by_active_lod_burden <- function(h_true, pred, Z_obs) {
+  group <- active_lod_group(Z_obs)
 
   pred_mean <- colMeans(pred)
 
@@ -191,10 +204,7 @@ mse_by_first2_lod <- function(h_true, pred, Z_obs) {
       .by = group
     )
 
-  if (h_func == 1){template <- tibble::tibble(group = c("+", "-"))}
-  if (h_func == 2){template <- tibble::tibble(group = c("++", "+-", "--"))}
-  if (h_func == 3){template <- tibble::tibble(group = c("++", "+-", "--"))}
-  
+  template <- active_lod_template()
 
   by_group <- template |>
     dplyr::left_join(observed, by = "group") |>
@@ -212,23 +222,8 @@ mse_by_first2_lod <- function(h_true, pred, Z_obs) {
   dplyr::bind_rows(by_group, overall)
 }
 
-coverage_by_first2_lod <- function(h_true, pred, Z_obs) {
-  z1_below <- is.na(Z_obs[, 1])
-  z2_below <- is.na(Z_obs[, 2])
-
-  if (h_func == 2 | h_func == 3){
-    group <- dplyr::case_when(
-      !z1_below & !z2_below ~ "++",
-      z1_below & !z2_below ~ "+-",
-      !z1_below & z2_below ~ "+-",
-      z1_below & z2_below ~ "--"
-    )
-  } else if (h_func == 1){
-    group <- dplyr::case_when(
-      !z1_below ~ "+",
-      z1_below  ~ "-",
-    )
-  }
+coverage_by_active_lod_burden <- function(h_true, pred, Z_obs) {
+  group <- active_lod_group(Z_obs)
 
   ci <- apply(
     pred,
@@ -254,9 +249,7 @@ coverage_by_first2_lod <- function(h_true, pred, Z_obs) {
       .by = group
     )
 
-  if (h_func == 1){template <- tibble::tibble(group = c("+", "-"))}
-  if (h_func == 2){template <- tibble::tibble(group = c("++", "+-", "--"))}
-  if (h_func == 3){template <- tibble::tibble(group = c("++", "+-", "--"))}
+  template <- active_lod_template()
 
   by_group <- template |>
     dplyr::left_join(observed, by = "group") |>
@@ -278,29 +271,8 @@ coverage_by_first2_lod <- function(h_true, pred, Z_obs) {
   dplyr::bind_rows(by_group, overall)
 }
 
-#empty table makes for when no complete case data is available 
-empty_mse_by_lod_count <- function(p) {
-  tibble::tibble(
-    group = c(0:p, NA),
-    n_obs = 0L,
-    mse = NA_real_
-  )
-}
-
-empty_coverage_by_lod_count <- function(p) {
-  tibble::tibble(
-    group = c(0:p, NA),
-    n_obs = 0L,
-    n_covered = 0L,
-    empirical_coverage = NA_real_,
-    mean_ci_width = NA_real_
-  )
-}
-
-empty_mse_by_first2_lod <- function() {
-  if (h_func == 1){ grouping = c("+", "-", "Overall")}
-  if (h_func == 2){ grouping = c("++", "+-", "--", "Overall")}
-  if (h_func == 3){ grouping = c("++", "+-", "--", "Overall")}
+empty_mse_by_active_lod_burden <- function() {
+  grouping <- c(active_lod_template()$group, "Overall")
   tibble::tibble(
     group = grouping,
     n_obs = 0L,
@@ -308,10 +280,8 @@ empty_mse_by_first2_lod <- function() {
   )
 }
 
-empty_coverage_by_first2_lod <- function() {
-  if (h_func == 1){ grouping = c("+", "-", "Overall")}
-  if (h_func == 2){ grouping = c("++", "+-", "--", "Overall")}
-  if (h_func == 3){ grouping = c("++", "+-", "--", "Overall")}
+empty_coverage_by_active_lod_burden <- function() {
+  grouping <- c(active_lod_template()$group, "Overall")
   tibble::tibble(
     group = grouping,
     n_obs = 0L,
@@ -323,25 +293,9 @@ empty_coverage_by_first2_lod <- function() {
 
 ##### Data functions #####
 
-true_h <- function(Z_raw, h_func, mean_offset, scale) {
+true_h <- function(Z_raw, h_config, mean_offset, scale) {
   Z_log <- log(Z_raw)
-
-  if (h_func == 1) {
-    return(4 * plogis(Z_log[, 1], location = mean_offset, scale = scale))
-  }
-
-  if (h_func == 2) {
-    return(
-      2 * plogis(Z_log[, 1], location = mean_offset, scale = scale) +
-        2 * plogis(Z_log[, 2], location = mean_offset, scale = scale)
-    )
-  }
-
-  if (h_func == 3) {
-    return(4 * plogis(0.5 * (Z_log[, 1] + Z_log[, 2]), location = mean_offset, scale = scale))
-  }
-
-  stop("Unsupported h_func")
+  h_config$h_fun(Z_log, mean_offset, scale)
 }
 
 CensorData <- function(Z_true, lod) {
@@ -350,6 +304,64 @@ CensorData <- function(Z_true, lod) {
     Z_obs[Z_true[,j] < lod[j], j] <- NA
   }
   return(Z_obs)
+}
+
+make_exposure_correlation <- function(p, active_idx, correlation) {
+  if (correlation == "ind") {
+    return(diag(p))
+  }
+
+  all_idx <- seq_len(p)
+  inactive_idx <- setdiff(all_idx, active_idx)
+
+  if (correlation == "within") {
+    sigma <- matrix(0.2, nrow = p, ncol = p)
+
+    if (length(active_idx) > 0) {
+      sigma[active_idx, active_idx] <- 0.5
+    }
+
+    if (length(inactive_idx) > 0) {
+      sigma[inactive_idx, inactive_idx] <- 0.5
+    }
+
+    diag(sigma) <- 1
+    return(sigma)
+  }
+
+  if (correlation == "across") {
+    sigma <- matrix(0.2, nrow = p, ncol = p)
+    diag(sigma) <- 1
+
+    n_pairs <- min(length(active_idx), length(inactive_idx))
+    if (n_pairs > 0) {
+      for (j in seq_len(n_pairs)) {
+        active_j <- active_idx[j]
+        inactive_j <- inactive_idx[j]
+        sigma[active_j, inactive_j] <- 0.5
+        sigma[inactive_j, active_j] <- 0.5
+      }
+    }
+
+    return(sigma)
+  }
+
+  stop("Unsupported correlation: ", correlation)
+}
+
+simulate_lognormal_exposures <- function(n, p, mean, sd, correlation, active_idx) {
+  if (correlation == "ind") {
+    return(matrix(exp(rnorm(n * p, mean = mean, sd = sd)), ncol = p))
+  }
+
+  sigma <- make_exposure_correlation(
+    p = p,
+    active_idx = active_idx,
+    correlation = correlation
+  )
+
+  z_log_standard <- matrix(rnorm(n * p), nrow = n, ncol = p) %*% chol(sigma)
+  exp(mean + sd * z_log_standard)
 }
 
 SingleImputation <- function(Z_obs, lod) {
@@ -422,14 +434,11 @@ calc_sens_spec <- function(
   pip,
   thresholds = c(0.5, 0.75, 0.9)
 ) {
-
-  if (h_func == 1){ true_active = c(TRUE, FALSE, FALSE, FALSE)}
-  if (h_func == 2){ true_active = c(TRUE, TRUE, FALSE, FALSE)}
-  if (h_func == 3){ true_active = c(TRUE, TRUE, FALSE, FALSE)}
-
   if (is.data.frame(pip)) {
     pip <- pip$PIP
   }
+
+  true_active <- seq_along(pip) %in% h_config$active_idx
 
   tibble::tibble(threshold = thresholds) |>
     dplyr::rowwise() |>
@@ -653,8 +662,8 @@ summarize_fixed_effects_mi <- function(fit_list, method = "trunc_mi") {
 
 contrast_truth <- function(contrast) {
   mean(
-    true_h(contrast$high, h_func, mean_offset, scale) -
-      true_h(contrast$low, h_func, mean_offset, scale)
+    true_h(contrast$high, h_config, mean_offset, scale) -
+      true_h(contrast$low, h_config, mean_offset, scale)
   )
 }
 
@@ -816,6 +825,7 @@ for (seed in seed_vec){
   print(seed)
   set.seed(seed)
   mi_seed <- seed
+  active_idx <- h_config$active_idx
 
   ##### Exposure and LoD#####
   #LoD is based on quantile of true distribution
@@ -824,7 +834,14 @@ for (seed in seed_vec){
   if (exposure_dist == "norm") {
     norm1 <- 0
     norm2 <- 1
-    Z_true <- matrix(exp(rnorm(n * p,mean = norm1,sd = norm2)), ncol = p)
+    Z_true <- simulate_lognormal_exposures(
+      n = n,
+      p = p,
+      mean = norm1,
+      sd = norm2,
+      correlation = correlation,
+      active_idx = active_idx
+    )
     lod <- exp(qnorm(lod_quantile, mean = norm1, sd = norm2))
     lod <- rep(lod, p)
 
@@ -846,7 +863,7 @@ for (seed in seed_vec){
   complete_case_idx <- complete.cases(Z_obs)
 
   ##### Response #####
-  h_true <- true_h(Z_true, h_func, mean_offset, scale)
+  h_true <- true_h(Z_true, h_config, mean_offset, scale)
   X <- matrix(rnorm(n * q_fixed_effects), nrow = n)
   X <- scale(X, center = TRUE, scale = FALSE)
   colnames(X) <- paste0("x", seq_len(q_fixed_effects))
@@ -949,13 +966,6 @@ for (seed in seed_vec){
   }
 
 
-  ##### BKMR ##### 
-  #used to store results by how many values are below the LoD
-  #ie group 0 is all values above the LoD, which is our focus
-  group <- rowSums(is.na(Z_obs))
-
-  group_complete_case <- group[complete_case_idx]
-
   ###############################################################################
   #Model calls and MSE calculation
 
@@ -963,10 +973,8 @@ for (seed in seed_vec){
   ###### BKMR Uncensored ######
   m_uncensored <- kmbayes(y = y, Z = Z_uncensored, X = X, iter = mcmc_iter,varsel = TRUE)
   pred_uncensored <- SamplePred(m_uncensored, Znew = Z_uncensored, Xnew = zero_fixed_effects(nrow(Z_uncensored)))
-  results_uncens  <- mse_by_lod_count(h_true, pred_uncensored, group, p)
-  results_uncens_first2  <- mse_by_first2_lod(h_true, pred_uncensored, Z_obs)
-  coverage_uncens <- coverage_by_lod_count(h_true, pred_uncensored, group, p)
-  coverage_uncens_first2 <- coverage_by_first2_lod(h_true, pred_uncensored, Z_obs)
+  results_uncens_active  <- mse_by_active_lod_burden(h_true, pred_uncensored, Z_obs)
+  coverage_uncens_active <- coverage_by_active_lod_burden(h_true, pred_uncensored, Z_obs)
   pip_uncensored <- ExtractPIPs(m_uncensored)
   sensspec_uncensored <- calc_sens_spec(pip_uncensored)
 
@@ -974,10 +982,8 @@ for (seed in seed_vec){
 
   m_impute <- kmbayes(y = y, Z = Z_impute, X = X, iter = mcmc_iter,varsel = TRUE)
   pred_impute <- SamplePred(m_impute, Znew = Z_impute, Xnew = zero_fixed_effects(nrow(Z_impute)))
-  results_impute <- mse_by_lod_count(h_true, pred_impute, group, p)
-  results_imputes_first2 <- mse_by_first2_lod(h_true, pred_impute, Z_obs)
-  coverage_impute <- coverage_by_lod_count(h_true, pred_impute, group, p)
-  coverage_impute_first2 <- coverage_by_first2_lod(h_true, pred_impute, Z_obs)
+  results_impute_active <- mse_by_active_lod_burden(h_true, pred_impute, Z_obs)
+  coverage_impute_active <- coverage_by_active_lod_burden(h_true, pred_impute, Z_obs)
   pip_impute <- ExtractPIPs(m_impute)
   sensspec_impute <- calc_sens_spec(pip_impute)
 
@@ -988,13 +994,11 @@ for (seed in seed_vec){
 
   m_augmented <- kmbayes(y = y, Z = Z_aug, X = X, iter = mcmc_iter,varsel = TRUE)
   pred_augmented <- SamplePred(m_augmented, Znew = Z_aug, Xnew = zero_fixed_effects(nrow(Z_aug)))
-  results_augmented <- mse_by_lod_count(h_true, pred_augmented, group, p)
-  results_augmented_first2 <- mse_by_first2_lod(h_true, pred_augmented, Z_obs)
-  coverage_augmented <- coverage_by_lod_count(h_true, pred_augmented, group, p)
-  coverage_augmented_first2 <- coverage_by_first2_lod(h_true, pred_augmented, Z_obs)
+  results_augmented_active <- mse_by_active_lod_burden(h_true, pred_augmented, Z_obs)
+  coverage_augmented_active <- coverage_by_active_lod_burden(h_true, pred_augmented, Z_obs)
 
 
-  augmented_pips <- extract_augmented_chemical_pips(m_augmented, p = 4)
+  augmented_pips <- extract_augmented_chemical_pips(m_augmented, p = p)
 
   pip_augmented_and <- pip_uncensored
   pip_augmented_and[,2] <- augmented_pips$pip_and
@@ -1011,15 +1015,8 @@ for (seed in seed_vec){
   if (n_complete >= 2) {
     m_complete_case <- kmbayes( y = y_complete_case, Z = Z_complete_case, X = X_complete_case, iter = mcmc_iter,varsel = TRUE)
     pred_complete_case <- SamplePred( m_complete_case, Znew = Z_complete_case, Xnew = zero_fixed_effects(nrow(Z_complete_case)))
-    results_complete_case <- mse_by_lod_count(h_true[complete_case_idx],pred_complete_case,group_complete_case,p)
-    results_complete_cases_first2 <- mse_by_first2_lod( h_true[complete_case_idx], pred_complete_case, Z_obs[complete_case_idx, , drop = FALSE])
-    coverage_complete_case <- coverage_by_lod_count(
-      h_true[complete_case_idx],
-      pred_complete_case,
-      group_complete_case,
-      p
-    )
-    coverage_complete_case_first2 <- coverage_by_first2_lod(
+    results_complete_case_active <- mse_by_active_lod_burden( h_true[complete_case_idx], pred_complete_case, Z_obs[complete_case_idx, , drop = FALSE])
+    coverage_complete_case_active <- coverage_by_active_lod_burden(
       h_true[complete_case_idx],
       pred_complete_case,
       Z_obs[complete_case_idx, , drop = FALSE]
@@ -1031,10 +1028,8 @@ for (seed in seed_vec){
     m_complete_case <- NULL
     pred_complete_case <- NULL
 
-    results_complete_case <- empty_mse_by_lod_count(p)
-    results_complete_cases_first2 <- empty_mse_by_first2_lod()
-    coverage_complete_case <- empty_coverage_by_lod_count(p)
-    coverage_complete_case_first2 <- empty_coverage_by_first2_lod()
+    results_complete_case_active <- empty_mse_by_active_lod_burden()
+    coverage_complete_case_active <- empty_coverage_by_active_lod_burden()
 
     pip_complete_case <- pip_uncensored
     pip_complete_case[,2] <- NA
@@ -1065,10 +1060,8 @@ for (seed in seed_vec){
 
   pred_trunc_mi <- do.call(rbind, pred_trunc_mi_list)
 
-  results_trunc_mi <- mse_by_lod_count( h_true, pred_trunc_mi, group, p)
-  results_trunc_mi_first2 <- mse_by_first2_lod( h_true, pred_trunc_mi, Z_obs)
-  coverage_trunc_mi <- coverage_by_lod_count(h_true, pred_trunc_mi, group, p)
-  coverage_trunc_mi_first2 <- coverage_by_first2_lod(h_true, pred_trunc_mi, Z_obs)
+  results_trunc_mi_active <- mse_by_active_lod_burden( h_true, pred_trunc_mi, Z_obs)
+  coverage_trunc_mi_active <- coverage_by_active_lod_burden(h_true, pred_trunc_mi, Z_obs)
 
   fixed_effect_estimates <- dplyr::bind_rows(
     summarize_fixed_effects(m_uncensored, "uncensored"),
@@ -1154,7 +1147,11 @@ for (seed in seed_vec){
       exposure_dist = exposure_dist,
       mean_offset = mean_offset,
       scale = scale,
+      correlation = correlation,
       h_func = h_func,
+      h_label = h_config$label,
+      active_idx = h_config$active_idx,
+      n_active = length(h_config$active_idx),
       mcmc_iter = mcmc_iter,
       m_imputations = m_imputations,
       mi_maxit = mi_maxit,
@@ -1166,33 +1163,19 @@ for (seed in seed_vec){
       run_mem = sum(gc()[, 6])
     ),
     results = list(
-      mse_by_lod_count = list(
-        uncensored = results_uncens,
-        impute = results_impute,
-        augmented = results_augmented,
-        complete_case = results_complete_case,
-        trunc_mi = results_trunc_mi
+      mse_by_active_lod_burden = list(
+        uncensored = results_uncens_active,
+        impute = results_impute_active,
+        augmented = results_augmented_active,
+        complete_case = results_complete_case_active,
+        trunc_mi = results_trunc_mi_active
       ),
-      mse_by_first2_lod = list(
-        uncensored = results_uncens_first2,
-        impute = results_imputes_first2,
-        augmented = results_augmented_first2,
-        complete_case = results_complete_cases_first2,
-        trunc_mi = results_trunc_mi_first2
-      ),
-      coverage_by_lod_count = list(
-        uncensored = coverage_uncens,
-        impute = coverage_impute,
-        augmented = coverage_augmented,
-        complete_case = coverage_complete_case,
-        trunc_mi = coverage_trunc_mi
-      ),
-      coverage_by_first2_lod = list(
-        uncensored = coverage_uncens_first2,
-        impute = coverage_impute_first2,
-        augmented = coverage_augmented_first2,
-        complete_case = coverage_complete_case_first2,
-        trunc_mi = coverage_trunc_mi_first2
+      coverage_by_active_lod_burden = list(
+        uncensored = coverage_uncens_active,
+        impute = coverage_impute_active,
+        augmented = coverage_augmented_active,
+        complete_case = coverage_complete_case_active,
+        trunc_mi = coverage_trunc_mi_active
       ),
       pips = list(
         uncensored = pip_uncensored,
@@ -1220,6 +1203,7 @@ for (seed in seed_vec){
     "_n", n,
     "_lod", lod_quantile,
     "_", exposure_dist,
+    "_cor", correlation,
     "_mo", mean_offset,
     "_s", scale,
     "_h",h_func,

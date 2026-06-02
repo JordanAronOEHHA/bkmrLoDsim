@@ -7,12 +7,27 @@ library(tidyr)
 
 
 combined_results <- readRDS("combined_results.rds")
+mse_by_active_lod_burden_summary <- combined_results$mse_by_active_lod_burden_summary
+if (is.null(mse_by_active_lod_burden_summary)) {
+  mse_by_active_lod_burden_summary <- combined_results$mse_by_first2_lod_summary
+}
+
+coverage_by_active_lod_burden_summary <- combined_results$coverage_by_active_lod_burden_summary
+if (is.null(coverage_by_active_lod_burden_summary)) {
+  coverage_by_active_lod_burden_summary <- combined_results$coverage_by_first2_lod_summary
+}
+
+h_func_levels <- c("1", "2", "3", "4")
+h_func_labels <- c("Single Active", "No Interaction", "Interaction", "Four Active")
+label_h_func <- function(x) {
+  factor(as.character(x), levels = h_func_levels, labels = h_func_labels)
+}
 
 ############################## RMSE ##################################
 
-process_df <- combined_results$mse_by_first2_lod_summary |>
+process_df <- mse_by_active_lod_burden_summary |>
   filter(n==800)|>
-  filter(group == '++' | group == '+-')|>
+  filter(group != "Overall")|>
   select(
     # n,
     lod_quantile,
@@ -33,9 +48,7 @@ process_df <- combined_results$mse_by_first2_lod_summary |>
 
 colnames(process_df)[(ncol(process_df) - 3):ncol(process_df)] <- c("Oracle", "Single Imputation", "Augmented", "Truncated MI")
 
-process_df$h_func <- factor(process_df$h_func, 
-                      levels = c("2", "3"), 
-                      labels = c("No Interaction", "Interaction"))
+process_df$h_func <- label_h_func(process_df$h_func)
 
 # plot_data = nested_loop_base_data(
 #     process_df, 
@@ -157,9 +170,7 @@ specificity_df <- sens_plot_df |>
 colnames(specificity_df)[(length(colnames(specificity_df))-3):length(colnames(specificity_df))] <- c("Oracle", "Single Imputation","Augmented or", "Truncated MI")
 
 
-specificity_df$h_func <- factor(specificity_df$h_func, 
-                      levels = c("2", "3"), 
-                      labels = c("No Interaction", "Interaction"))
+specificity_df$h_func <- label_h_func(specificity_df$h_func)
 
 plot_data = nested_loop_base_data(
     specificity_df, 
@@ -235,9 +246,7 @@ sensitivity_df <- sens_plot_df |>
 colnames(sensitivity_df)[(length(colnames(sensitivity_df))-3):length(colnames(sensitivity_df))] <- c("Oracle", "Single Imputation","Augmented or", "Truncated MI")
 
 
-sensitivity_df$h_func <- factor(sensitivity_df$h_func, 
-                      levels = c("2", "3"), 
-                      labels = c("No Interaction", "Interaction"))
+sensitivity_df$h_func <- label_h_func(sensitivity_df$h_func)
 
 plot_data = nested_loop_base_data(
     sensitivity_df, 
@@ -290,8 +299,8 @@ ggsave("Sensitivity.png",width = 9,height = 9)
 ############################## Coverage ##################################
 
 
-coverage_df <- combined_results$coverage_by_first2_lod_summary |>
-  filter(group == '++' | group == '+-' ) |>
+coverage_df <- coverage_by_active_lod_burden_summary |>
+  filter(group != "Overall") |>
   select(
     n,
     lod_quantile,
@@ -330,9 +339,7 @@ coverage_df <- coverage_df |>
 col_len <- ncol(coverage_df)
 colnames(coverage_df)[(col_len-3):col_len] <- c("Oracle", "Single Imputation","Augmented", "Truncated MI")
 
-coverage_df$h_func <- factor(coverage_df$h_func, 
-                      levels = c("2", "3"), 
-                      labels = c("No Interaction", "Interaction"))
+coverage_df$h_func <- label_h_func(coverage_df$h_func)
 
 
 plot_data = nested_loop_base_data(
@@ -420,9 +427,7 @@ contrast_df <- contrast_df |>
 col_len <- ncol(contrast_df)
 colnames(contrast_df)[(col_len-3):col_len] <- c("Oracle", "Single Imputation","Augmented", "Truncated MI")
 
-contrast_df$h_func <- factor(contrast_df$h_func, 
-                      levels = c("2", "3"), 
-                      labels = c("No Interaction", "Interaction"))
+contrast_df$h_func <- label_h_func(contrast_df$h_func)
 
 
 plot_data = nested_loop_base_data(

@@ -13,12 +13,13 @@ exposure_dist=$3
 mean_offset=$4
 h_func=$5
 scale=$6
+correlation=${7:-ind}
 date
 path="/projects/standard/mfiecas/aron0064/bkmrLoDsim"
 cd $path/Routputs
 start_time=$(date +%s)
 module load R/4.4.0-openblas-rocky8
-Rscript $path/Rcode/bmkrAug.R $n $lod_quantile $exposure_dist $mean_offset $h_func $scale
+Rscript $path/Rcode/bmkrAug.R $n $lod_quantile $exposure_dist $mean_offset $h_func $scale $correlation
 finish_time=$(date +%s)
 elapsed_time=$((finish_time  - start_time))
 
