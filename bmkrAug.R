@@ -573,10 +573,6 @@ prep_augmented <- function(Z_raw) {
   )$Z
 }
 
-prep_complete_case <- function(Z_raw) {
-  scale(log(Z_raw), center = complete_center, scale = complete_scale)
-}
-
 prep_trunc_mi <- function(Z_raw) {
   # Minimal version: represent censored contrast points by LoD/sqrt(2),
   # then use the common MI scaling already used in the script.
@@ -725,19 +721,6 @@ estimate_all_methods_for_contrast <- function(contrast_obj, contrast_name) {
     )
   )
 
-  if (!is.null(m_complete_case)) {
-    results <- c(
-      results,
-      list(
-        summarize_contrast(
-          estimate_contrast(m_complete_case, contrast_obj, prep_complete_case),
-          truth,
-          "complete_case"
-        )
-      )
-    )
-  }
-
   dplyr::bind_rows(results) |>
     dplyr::mutate(
       contrast = contrast_name,
@@ -817,24 +800,6 @@ estimate_all_methods_for_interaction <- function(
     )
   )
 
-  if (!is.null(m_complete_case)) {
-    results <- c(
-      results,
-      list(
-        summarize_contrast(
-          estimate_interaction_contrast(
-            m_complete_case,
-            contrast_median,
-            contrast_below,
-            prep_complete_case
-          ),
-          truth,
-          "complete_case"
-        )
-      )
-    )
-  }
-
   dplyr::bind_rows(results) |>
     dplyr::mutate(
       contrast = contrast_name,
@@ -890,9 +855,6 @@ for (seed in seed_vec){
   # Create observed data with censoring
   Z_obs <- CensorData(Z_true, lod)
 
-  #get indices for complete case, can be empty with higher % censoring
-  complete_case_idx <- complete.cases(Z_obs)
-
   ##### Response #####
   h_true <- true_h(Z_true, h_config, mean_offset, scale)
   X <- matrix(rnorm(n * q_fixed_effects), nrow = n)
@@ -901,15 +863,12 @@ for (seed in seed_vec){
   fixed_effect <- drop(X %*% fixed_effect_beta)
 
   y <- h_true + fixed_effect + rnorm(n, sd = 1)
-  y_complete_case <- y[complete_case_idx]
-  X_complete_case <- X[complete_case_idx, , drop = FALSE]
 
   ##### Models #####
   # A. Uncensored
   # B. Imputation (LoD / sqrt(2))
   # C. Augmented (Indicator + Continuous)
-  # D. Complete case
-  # E. Truncated MI (tobit lognormal)
+  # D. Truncated MI (tobit lognormal)
 
   ###### A. Uncensored ######
   Z_uncensored <- Z_true
@@ -921,10 +880,7 @@ for (seed in seed_vec){
   aug_data <- AugmentData(Z_obs = Z_obs,lod = lod)
   Z_aug <- aug_data$Z
 
-  ###### D. Complete case ######
-  Z_complete_case <- Z_uncensored[complete_case_idx, , drop = FALSE]
-
-  ###### E. Truncated multiple imputation using qgcomp::mice.impute.leftcenslognorm ######
+  ###### D. Truncated multiple imputation using qgcomp::mice.impute.leftcenslognorm ######
   mice.impute.leftcenslognorm <- qgcomp::mice.impute.leftcenslognorm
   x_names <- paste0("x", seq_len(q_fixed_effects))
   z_names <- paste0("z", seq_len(p))
@@ -983,20 +939,6 @@ for (seed in seed_vec){
   Z_impute <- scale(log(Z_impute), center = impute_center, scale = impute_scale)
 
 
-  ####### CC scaling #######
-
-  if (nrow(Z_complete_case) >= 2) {
-    complete_center <- colMeans(log(Z_complete_case))
-    complete_scale <- apply(log(Z_complete_case), 2, sd)
-
-    Z_complete_case <- scale(
-      log(Z_complete_case),
-      center = complete_center,
-      scale = complete_scale
-    )
-  }
-
-
   ###############################################################################
   #Model calls and prediction diagnostics
 
@@ -1048,34 +990,6 @@ for (seed in seed_vec){
   pip_augmented_or[,2] <- augmented_pips$pip_or
   sensspec_augmented_or <- calc_sens_spec(pip_augmented_or)
 
-  ###### BKMR Complete Case ######
-
-  n_complete <- nrow(Z_complete_case)
-
-  if (n_complete >= 2) {
-    m_complete_case <- kmbayes( y = y_complete_case, Z = Z_complete_case, X = X_complete_case, iter = mcmc_iter,varsel = TRUE)
-    pred_complete_case <- SamplePred( m_complete_case, Znew = Z_complete_case, Xnew = zero_fixed_effects(nrow(Z_complete_case)))
-    diagnostics_complete_case_active <- prediction_diagnostics_by_active_lod_burden(
-      h_true[complete_case_idx],
-      pred_complete_case,
-      Z_obs[complete_case_idx, , drop = FALSE]
-    )
-    pip_complete_case <- ExtractPIPs(m_complete_case)
-    sensspec_complete_case <- calc_sens_spec(pip_complete_case)
-
-  } else {
-    m_complete_case <- NULL
-    pred_complete_case <- NULL
-
-    diagnostics_complete_case_active <- empty_prediction_diagnostics_by_active_lod_burden()
-
-    pip_complete_case <- pip_uncensored
-    pip_complete_case[,2] <- NA
-    sensspec_complete_case <- sensspec_uncensored
-    sensspec_complete_case[,2:3] <- NA
-  }
-
-
   ###### BKMR MI Tobit ######
   #create empty lists to store results for MI 
   Z_trunc_mi_list <- vector("list", length = m_imputations)
@@ -1108,7 +1022,6 @@ for (seed in seed_vec){
     summarize_fixed_effects(m_uncensored, "uncensored"),
     summarize_fixed_effects(m_impute, "impute"),
     summarize_fixed_effects(m_augmented, "augmented"),
-    summarize_fixed_effects(m_complete_case, "complete_case"),
     summarize_fixed_effects_mi(fit_trunc_mi_list, "trunc_mi")
   )
 
@@ -1208,7 +1121,6 @@ for (seed in seed_vec){
         uncensored = diagnostics_uncens_active,
         impute = diagnostics_impute_active,
         augmented = diagnostics_augmented_active,
-        complete_case = diagnostics_complete_case_active,
         trunc_mi = diagnostics_trunc_mi_active
       ),
       pips = list(
@@ -1216,7 +1128,6 @@ for (seed in seed_vec){
         impute = pip_impute,
         augmented_and = pip_augmented_and,
         augmented_or = pip_augmented_or,
-        complete_case = pip_complete_case,
         trunc_mi = pip_trunc_mi
       ),
       sensspec = list(
@@ -1224,7 +1135,6 @@ for (seed in seed_vec){
         impute = sensspec_impute,
         augmented_and = sensspec_augmented_and,
         augmented_or = sensspec_augmented_or,
-        complete_case = sensspec_complete_case,
         trunc_mi = sensspec_trunc_mi
       ),
       fixed_effects = fixed_effect_estimates,

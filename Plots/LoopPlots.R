@@ -41,7 +41,6 @@ process_df <- mse_by_active_lod_burden_summary |>
       "pooled_mse_impute",
       "pooled_mse_augmented",
       "pooled_mse_trunc_mi"
-      # "pooled_mse_complete_case"
     ))
   )
 
@@ -314,7 +313,7 @@ coverage_df <- coverage_by_active_lod_burden_summary |>
     group,
     mean_offset,
     scale,
-    # h_func,
+    h_func,
     method,
     empirical_coverage,
     mean_ci_width
@@ -339,7 +338,7 @@ coverage_df <- coverage_by_active_lod_burden_summary |>
 coverage_df <- coverage_df |> 
   filter(metric=="Coverage") |>
   # filter(n==800) |>
-  select(-'metric',-'n',-'complete_case') |>
+  select(lod_quantile, group, mean_offset, scale, h_func, uncensored, impute, augmented, trunc_mi) |>
   relocate(uncensored, impute, augmented, trunc_mi, .after = h_func )
 
 col_len <- ncol(coverage_df)
@@ -433,7 +432,7 @@ contrast_df <- combined_results$contrast_summary |>
 
 contrast_df <- contrast_df |> 
   filter(n==800) |>
-  select(-'n',-'complete_case') |>
+  select(lod_quantile, exposure_dist, mean_offset, scale, h_func, contrast_family, uncensored, impute, augmented, trunc_mi) |>
   relocate(uncensored, impute, augmented, trunc_mi, .after = contrast_family )
 
 col_len <- ncol(contrast_df)

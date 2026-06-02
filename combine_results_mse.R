@@ -18,6 +18,17 @@ if (length(result_files) == 0) {
 
 counter  <- 0
 
+prediction_methods <- c("uncensored", "impute", "augmented", "trunc_mi")
+stored_result_methods <- c(prediction_methods, "augmented_and", "augmented_or")
+
+filter_result_methods <- function(result_list) {
+  if (is.null(result_list)) {
+    return(NULL)
+  }
+
+  result_list[intersect(names(result_list), stored_result_methods)]
+}
+
 get_result_table <- function(results, name, fallback = NULL) {
   if (!is.null(results[[name]])) {
     return(results[[name]])
@@ -34,6 +45,8 @@ bind_method_tables <- function(result_list, metadata_tbl) {
   if (is.null(result_list)) {
     return(tibble())
   }
+
+  result_list <- filter_result_methods(result_list)
 
   imap_dfr(
     result_list,
@@ -211,7 +224,7 @@ read_sim_result <- function(path) {
     )))
 
   sensspec <- imap_dfr(
-    sim_result$results$sensspec,
+    filter_result_methods(sim_result$results$sensspec),
     \(result_tbl, method) {
       bind_cols(
         metadata_tbl,
@@ -222,7 +235,7 @@ read_sim_result <- function(path) {
   )
 
   pips <- imap_dfr(
-    sim_result$results$pips,
+    filter_result_methods(sim_result$results$pips),
     \(result_tbl, method) {
       out <- as_tibble(result_tbl)
 
@@ -485,6 +498,7 @@ combined_coverage_by_active_lod_burden <- map_dfr(combined_raw, "coverage_by_act
 combined_sensspec <- map_dfr(combined_raw, "sensspec")
 combined_pips <- map_dfr(combined_raw, "pips")
 combined_contrasts <- map_dfr(combined_raw, "contrasts") |>
+  filter(method %in% prediction_methods) |>
   add_contrast_family()
 
 scenario_cols <- c(
@@ -568,7 +582,7 @@ logistics_summary |>
 
 runs_by_method <- pool_mse(
   combined_mse_by_active_lod_burden |>
-    filter(group == "Overall", method != "complete_case"),
+    filter(group == "Overall"),
   c(scenario_cols)
 ) |>
   select(
