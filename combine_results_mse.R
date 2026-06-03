@@ -82,6 +82,17 @@ prediction_diagnostic_cols <- c(
   "mean_interval_score"
 )
 
+fixed_effect_estimate_cols <- c(
+  "method",
+  "fixed_effect",
+  "truth",
+  "est",
+  "bias",
+  "ci_low",
+  "ci_high",
+  "covered"
+)
+
 standardize_prediction_diagnostics <- function(data) {
   if (nrow(data) == 0 && ncol(data) == 0) {
     return(tibble())
@@ -96,6 +107,28 @@ standardize_prediction_diagnostics <- function(data) {
     mutate(
       rmse = ifelse(is.na(rmse) & !is.na(mse), sqrt(mse), rmse)
     )
+}
+
+standardize_fixed_effect_estimates <- function(data) {
+  data <- as_tibble(data)
+
+  fixed_effect_col_defaults <- list(
+    method = NA_character_,
+    fixed_effect = NA_character_,
+    truth = NA_real_,
+    est = NA_real_,
+    bias = NA_real_,
+    ci_low = NA_real_,
+    ci_high = NA_real_,
+    covered = NA
+  )
+
+  missing_cols <- setdiff(fixed_effect_estimate_cols, names(data))
+  for (col in missing_cols) {
+    data[[col]] <- rep(fixed_effect_col_defaults[[col]], nrow(data))
+  }
+
+  data
 }
 
 legacy_prediction_diagnostics <- function(mse_list, coverage_list) {
@@ -261,6 +294,22 @@ read_sim_result <- function(path) {
     )
   }
 
+  fixed_effect_estimates <- get_result_table(
+    sim_result$results,
+    "fixed_effects",
+    fallback = "fixed_effect_estimates"
+  )
+
+  fixed_effect_estimates <- if (is.null(fixed_effect_estimates)) {
+    tibble()
+  } else {
+    bind_cols(
+      metadata_tbl,
+      as_tibble(fixed_effect_estimates)
+    )
+  } |>
+    standardize_fixed_effect_estimates()
+
   list(
     file_metadata = metadata_tbl,
     prediction_diagnostics_by_active_lod_burden = prediction_diagnostics_by_active_lod_burden,
@@ -268,6 +317,7 @@ read_sim_result <- function(path) {
     coverage_by_active_lod_burden = coverage_by_active_lod_burden,
     sensspec = sensspec,
     pips = pips,
+    fixed_effect_estimates = fixed_effect_estimates,
     contrasts = contrasts
   )
 }
@@ -451,6 +501,50 @@ pool_contrasts <- function(data, group_cols) {
     arrange(across(all_of(group_cols)))
 }
 
+pool_fixed_effect_estimates <- function(data, group_cols) {
+  if (nrow(data) == 0) {
+    return(tibble())
+  }
+
+  mean_or_na <- function(value) {
+    valid <- !is.na(value)
+    if (!any(valid)) {
+      return(NA_real_)
+    }
+
+    mean(value[valid])
+  }
+
+  rate_or_na <- function(value) {
+    valid <- !is.na(value)
+    if (!any(valid)) {
+      return(NA_real_)
+    }
+
+    mean(value[valid])
+  }
+
+  data |>
+    mutate(
+      ci_width = ci_high - ci_low,
+      covered = as.logical(covered)
+    ) |>
+    group_by(across(all_of(group_cols))) |>
+    summarize(
+      runs = n_distinct(seed),
+      n_fixed_effect_estimates = dplyr::n(),
+      truth = mean_or_na(truth),
+      mean_est = mean_or_na(est),
+      mean_bias = mean_or_na(bias),
+      rmse = sqrt(mean_or_na(bias^2)),
+      coverage = rate_or_na(covered),
+      coverage_pct = 100 * coverage,
+      mean_ci_width = mean_or_na(ci_width),
+      .groups = "drop"
+    ) |>
+    arrange(across(all_of(group_cols)))
+}
+
 add_contrast_family <- function(data) {
   if (nrow(data) == 0) {
     return(data)
@@ -506,6 +600,9 @@ combined_mse_by_active_lod_burden <- map_dfr(combined_raw, "mse_by_active_lod_bu
 combined_coverage_by_active_lod_burden <- map_dfr(combined_raw, "coverage_by_active_lod_burden")
 combined_sensspec <- map_dfr(combined_raw, "sensspec")
 combined_pips <- map_dfr(combined_raw, "pips")
+combined_fixed_effect_estimates <- map_dfr(combined_raw, "fixed_effect_estimates") |>
+  standardize_fixed_effect_estimates() |>
+  filter(method %in% prediction_methods)
 combined_contrasts <- map_dfr(combined_raw, "contrasts") |>
   filter(method %in% prediction_methods) |>
   add_contrast_family()
@@ -535,6 +632,11 @@ sensspec_summary_long <- pool_sensspec(
 contrast_summary <- pool_contrasts(
   combined_contrasts,
   c(scenario_cols, "contrast_family", "fixed_at", "method")
+)
+
+fixed_effect_estimates_summary <- pool_fixed_effect_estimates(
+  combined_fixed_effect_estimates,
+  c(scenario_cols, "method", "fixed_effect")
 )
 
 logistics_summary <- pool_logistics(
@@ -572,9 +674,11 @@ combined_results <- list(
   combined_coverage_by_active_lod_burden = combined_coverage_by_active_lod_burden,
   combined_sensspec = combined_sensspec,
   combined_pips = combined_pips,
+  combined_fixed_effect_estimates = combined_fixed_effect_estimates,
   combined_contrasts = combined_contrasts,
   prediction_diagnostics_by_active_lod_burden_summary = prediction_diagnostics_by_active_lod_burden_summary,
   sensspec_summary_long = sensspec_summary_long,
+  fixed_effect_estimates_summary = fixed_effect_estimates_summary,
   contrast_summary = contrast_summary
 )
 
