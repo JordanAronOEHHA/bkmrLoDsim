@@ -518,50 +518,10 @@ prediction_diagnostics_by_active_lod_burden_summary <- pool_prediction_diagnosti
   c(scenario_cols, "method", "group")
 )
 
-mse_by_active_lod_burden_summary <- prediction_diagnostics_by_active_lod_burden_summary |>
-  select(
-    all_of(c(scenario_cols, "method", "group")),
-    pooled_mse = rmse
-  ) |>
-  pivot_pooled_mse_wider()
-
-coverage_by_active_lod_burden_summary <- prediction_diagnostics_by_active_lod_burden_summary |>
-  select(
-    all_of(c(scenario_cols, "method", "group")),
-    runs,
-    total_n_obs,
-    total_covered,
-    empirical_coverage,
-    empirical_coverage_pct,
-    mean_ci_width
-  )
-
-prediction_diagnostics_by_active_lod_burden_wide <- prediction_diagnostics_by_active_lod_burden_summary |>
-  pivot_wider(
-    id_cols = all_of(c(scenario_cols, "group")),
-    names_from = method,
-    values_from = c(
-      rmse,
-      mean_bias,
-      mae,
-      empirical_coverage,
-      mean_ci_width,
-      mean_posterior_sd,
-      calibration_ratio,
-      lower_miss_rate,
-      upper_miss_rate,
-      mean_interval_score
-    ),
-    names_sep = "_"
-  )
-
 sensspec_summary_long <- pool_sensspec(
   combined_sensspec,
   c(scenario_cols, "method", "threshold")
 )
-
-sensspec_summary <- sensspec_summary_long |>
-  pivot_sensspec_wider()
 
 contrast_summary <- pool_contrasts(
   combined_contrasts,
@@ -605,11 +565,7 @@ combined_results <- list(
   combined_pips = combined_pips,
   combined_contrasts = combined_contrasts,
   prediction_diagnostics_by_active_lod_burden_summary = prediction_diagnostics_by_active_lod_burden_summary,
-  prediction_diagnostics_by_active_lod_burden_wide = prediction_diagnostics_by_active_lod_burden_wide,
-  mse_by_active_lod_burden_summary = mse_by_active_lod_burden_summary,
-  coverage_by_active_lod_burden_summary = coverage_by_active_lod_burden_summary,
   sensspec_summary_long = sensspec_summary_long,
-  sensspec_summary = sensspec_summary,
   contrast_summary = contrast_summary
 )
 

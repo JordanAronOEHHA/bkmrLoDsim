@@ -7,15 +7,6 @@ library(tidyr)
 
 
 combined_results <- readRDS("combined_results.rds")
-mse_by_active_lod_burden_summary <- combined_results$mse_by_active_lod_burden_summary
-if (is.null(mse_by_active_lod_burden_summary)) {
-  mse_by_active_lod_burden_summary <- combined_results$mse_by_first2_lod_summary
-}
-
-coverage_by_active_lod_burden_summary <- combined_results$coverage_by_active_lod_burden_summary
-if (is.null(coverage_by_active_lod_burden_summary)) {
-  coverage_by_active_lod_burden_summary <- combined_results$coverage_by_first2_lod_summary
-}
 
 h_func_levels <- c("1", "2", "3", "4")
 h_func_labels <- c("Single Active", "No Interaction", "Interaction", "Four Active")
@@ -110,27 +101,43 @@ draw_nested_metric_plot <- function(
 
 ############################## RMSE ##################################
 
+mse_by_active_lod_burden_summary <- combined_results$prediction_diagnostics_by_active_lod_burden_summary |> select(
+    n,
+    p,
+    lod_quantile,
+    exposure_dist,
+    correlation,
+    mean_offset,
+    h_func,
+    scale,
+    mcmc_iter, 
+    group,
+    method,
+    mean_posterior_sd
+  ) |>
+  pivot_wider(
+    names_from = method,
+    values_from = mean_posterior_sd
+  )
+
 process_df <- mse_by_active_lod_burden_summary |>
-  # filter(n==800)|>
-  # filter(group != "Overall")|>
   select(
     # n,
     lod_quantile,
     # exposure_dist,
-    mean_offset,
-    scale,
+    # mean_offset,
+    # scale,
     group,
     # h_func,
-    any_of(c(
-      "pooled_mse_uncensored",
-      "pooled_mse_impute",
-      "pooled_mse_augmented",
-      "pooled_mse_trunc_mi"
-    ))
+    correlation, 
+    augmented,
+    impute, 
+    trunc_mi,
+    uncensored
   )
 
 
-colnames(process_df)[(ncol(process_df) - 3):ncol(process_df)] <- c("Oracle", "Single Imputation", "Augmented", "Truncated MI")
+# colnames(process_df)[(ncol(process_df) - 3):ncol(process_df)] <- c("Oracle", "Single Imputation", "Augmented", "Truncated MI")
 
 # process_df$h_func <- label_h_func(process_df$h_func)
 
@@ -138,6 +145,7 @@ colnames(process_df)[(ncol(process_df) - 3):ncol(process_df)] <- c("Oracle", "Si
 draw_nested_metric_plot(
   process_df,
   y_name = "RMSE",
+  steps = c("correlation"),
   steps_y_base = -.025,
   steps_y_shift = .075,
   spu_x_shift = .25,
@@ -217,10 +225,10 @@ draw_nested_metric_plot(
   steps_y_shift = .025,
   spu_x_shift = .3,
   axis_text_size = 6,
-  grid_rows = "threshold",
-  save_path = "Specificity.png",
-  save_width = 9,
-  save_height = 9
+  grid_rows = "threshold"
+  # save_path = "Specificity.png",
+  # save_width = 9,
+  # save_height = 9
 )
 
 
@@ -270,46 +278,35 @@ draw_nested_metric_plot(
 
 ############################## Coverage ##################################
 
-
-coverage_df <- coverage_by_active_lod_burden_summary |>
-  filter(group != "Overall") |>
-  select(
-    n,
+coverage_by_active_lod_burden_summary <- combined_results$prediction_diagnostics_by_active_lod_burden_summary |> select(
+    # n,
+    # p,
     lod_quantile,
     # exposure_dist,
+    correlation,
+    # mean_offset,
+    # h_func,
+    # scale,
+    # mcmc_iter, 
     group,
-    mean_offset,
-    scale,
-    h_func,
     method,
-    empirical_coverage,
-    mean_ci_width
-  ) |>
-  pivot_longer(
-    cols = c(empirical_coverage, mean_ci_width),
-    names_to = "metric",
-    values_to = "value"
-  ) |>
-  mutate(
-    metric = recode(
-      metric,
-      empirical_coverage = "Coverage",
-      mean_ci_width = "Width"
-    )
+    empirical_coverage
   ) |>
   pivot_wider(
     names_from = method,
-    values_from = value
+    values_from = empirical_coverage
   )
 
-coverage_df <- coverage_df |> 
-  filter(metric=="Coverage") |>
-  # filter(n==800) |>
-  select(lod_quantile, group, mean_offset, scale, h_func, uncensored, impute, augmented, trunc_mi) |>
-  relocate(uncensored, impute, augmented, trunc_mi, .after = h_func )
+coverage_df <- coverage_by_active_lod_burden_summary 
+
+# coverage_df <- coverage_df |> 
+#   # filter(metric=="Coverage") |>
+#   # filter(n==800) |>
+#   # select(lod_quantile, group, mean_offset, scale, h_func, uncensored, impute, augmented, trunc_mi) |>
+#   relocate(uncensored, impute, augmented, trunc_mi, .after = h_func )
 
 col_len <- ncol(coverage_df)
-colnames(coverage_df)[(col_len-3):col_len] <- c("Oracle", "Single Imputation","Augmented", "Truncated MI")
+# colnames(coverage_df)[(col_len-3):col_len] <- c("Oracle", "Single Imputation","Augmented", "Truncated MI")
 
 coverage_df$h_func <- label_h_func(coverage_df$h_func)
 
@@ -317,14 +314,15 @@ coverage_df$h_func <- label_h_func(coverage_df$h_func)
 draw_nested_metric_plot(
   coverage_df,
   y_name = "CI Coverage",
+  steps = c("correlation"),
   steps_y_base = 1.3,
   steps_y_shift = .05,
   spu_x_shift = .3,
   axis_text_size = 6,
-  abline_intercept = 0.95,
-  save_path = "Coverage.png",
-  save_width = 10,
-  save_height = 10
+  abline_intercept = 0.95
+  # save_path = "Coverage.png",
+  # save_width = 10,
+  # save_height = 10
 )
 
 
