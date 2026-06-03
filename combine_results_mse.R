@@ -332,24 +332,33 @@ pool_prediction_diagnostics <- function(data, group_cols) {
   }
 
   data |>
+    mutate(
+      source_n_obs = n_obs,
+      source_mse = mse,
+      source_mean_bias = mean_bias,
+      source_mae = mae,
+      source_mean_posterior_sd = mean_posterior_sd,
+      source_mean_ci_width = mean_ci_width,
+      source_mean_interval_score = mean_interval_score
+    ) |>
     group_by(across(all_of(group_cols))) |>
     summarize(
       runs = n_distinct(seed),
-      total_n_obs = sum(n_obs, na.rm = TRUE),
+      total_n_obs = sum(source_n_obs, na.rm = TRUE),
       total_covered = sum_count(n_covered),
       total_lower_misses = sum_count(n_lower_misses),
       total_upper_misses = sum_count(n_upper_misses),
-      mse = weighted_mean(.data$mse, .data$n_obs),
-      mean_bias = weighted_mean(.data$mean_bias, .data$n_obs),
-      mae = weighted_mean(.data$mae, .data$n_obs),
-      sd_error = pooled_sd_error(.data$mean_bias, .data$mse, .data$n_obs),
-      mean_posterior_sd = weighted_mean(.data$mean_posterior_sd, .data$n_obs),
-      empirical_coverage = count_rate(n_covered, n_obs),
+      mse = weighted_mean(source_mse, source_n_obs),
+      mean_bias = weighted_mean(source_mean_bias, source_n_obs),
+      mae = weighted_mean(source_mae, source_n_obs),
+      sd_error = pooled_sd_error(source_mean_bias, source_mse, source_n_obs),
+      mean_posterior_sd = weighted_mean(source_mean_posterior_sd, source_n_obs),
+      empirical_coverage = count_rate(n_covered, source_n_obs),
       empirical_coverage_pct = 100 * empirical_coverage,
-      lower_miss_rate = count_rate(n_lower_misses, n_obs),
-      upper_miss_rate = count_rate(n_upper_misses, n_obs),
-      mean_ci_width = weighted_mean(.data$mean_ci_width, .data$n_obs),
-      mean_interval_score = weighted_mean(.data$mean_interval_score, .data$n_obs),
+      lower_miss_rate = count_rate(n_lower_misses, source_n_obs),
+      upper_miss_rate = count_rate(n_upper_misses, source_n_obs),
+      mean_ci_width = weighted_mean(source_mean_ci_width, source_n_obs),
+      mean_interval_score = weighted_mean(source_mean_interval_score, source_n_obs),
       .groups = "drop"
     ) |>
     mutate(

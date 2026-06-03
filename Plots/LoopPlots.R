@@ -113,11 +113,11 @@ mse_by_active_lod_burden_summary <- combined_results$prediction_diagnostics_by_a
     mcmc_iter, 
     group,
     method,
-    mean_posterior_sd
+    mse
   ) |>
   pivot_wider(
     names_from = method,
-    values_from = mean_posterior_sd
+    values_from = mse
   )
 
 process_df <- mse_by_active_lod_burden_summary |>
