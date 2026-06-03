@@ -113,11 +113,11 @@ mse_by_active_lod_burden_summary <- combined_results$prediction_diagnostics_by_a
     mcmc_iter, 
     group,
     method,
-    mse
+    mean_bias
   ) |>
   pivot_wider(
     names_from = method,
-    values_from = mse
+    values_from = mean_bias
   )
 
 process_df <- mse_by_active_lod_burden_summary |>
@@ -130,10 +130,10 @@ process_df <- mse_by_active_lod_burden_summary |>
     group,
     # h_func,
     correlation, 
+    uncensored,
+    impute,
     augmented,
-    impute, 
-    trunc_mi,
-    uncensored
+    trunc_mi
   )
 
 
@@ -144,7 +144,7 @@ process_df <- mse_by_active_lod_burden_summary |>
 
 draw_nested_metric_plot(
   process_df,
-  y_name = "RMSE",
+  y_name = "Bias",
   steps = c("correlation"),
   steps_y_base = -.025,
   steps_y_shift = .075,
@@ -152,7 +152,7 @@ draw_nested_metric_plot(
   axis_text_size = 7,
   abline_intercept = 0
 )
-# ggsave("RMSE.png",width = 10,height = 10)
+ggsave("Biasp8.png",width = 10,height = 10)
 
 ##############################
 
@@ -160,16 +160,17 @@ draw_nested_metric_plot(
 
 sens_plot_df <- combined_results$sensspec_summary_long |>
   select(
-    n,
+    # n,
     lod_quantile,
     # exposure_dist,
-    mean_offset,
+    # mean_offset,
     # h_func,
-    scale,
+    # scale,
     threshold,
     method,
     mean_sensitivity,
-    mean_specificity
+    mean_specificity,
+    correlation
   ) |>
   pivot_longer(
     cols = c(mean_sensitivity, mean_specificity),
@@ -198,9 +199,10 @@ specificity_df <- sens_plot_df |>
   select(
   # n,
   lod_quantile,
+  correlation,
   # exposure_dist,
-  mean_offset,
-  scale,
+  # mean_offset,
+  # scale,
   # h_func,
   # metric,
   threshold,
@@ -221,14 +223,15 @@ specificity_df$h_func <- label_h_func(specificity_df$h_func)
 draw_nested_metric_plot(
   specificity_df,
   y_name = "Specificity",
+  steps = c("correlation"),
   steps_y_base = 1.175,
   steps_y_shift = .025,
   spu_x_shift = .3,
   axis_text_size = 6,
-  grid_rows = "threshold"
-  # save_path = "Specificity.png",
-  # save_width = 9,
-  # save_height = 9
+  grid_rows = "threshold",
+  save_path = "Specificity.png",
+  save_width = 9,
+  save_height = 9
 )
 
 
@@ -236,14 +239,15 @@ draw_nested_metric_plot(
 
 sensitivity_df <- sens_plot_df |> 
   filter(metric=="sensitivity") |> 
-  filter(n==800) |>
+  # filter(n==800) |>
   select(
   # n,
   lod_quantile,
-  exposure_dist,
-  mean_offset,
-  scale,
-  h_func,
+  correlation,
+  # exposure_dist,
+  # mean_offset,
+  # scale,
+  # h_func,
   # metric,
   threshold,
   uncensored,
@@ -263,7 +267,8 @@ sensitivity_df$h_func <- label_h_func(sensitivity_df$h_func)
 draw_nested_metric_plot(
   sensitivity_df,
   y_name = "Sensitivity",
-  steps = c("mean_offset", "exposure_dist", "scale"),
+  # steps = c("mean_offset", "exposure_dist", "scale"),
+  steps = c("correlation"),
   grid_rows = "threshold",
   grid_cols = "h_func",
   steps_y_base = 1.175,
@@ -278,7 +283,7 @@ draw_nested_metric_plot(
 
 ############################## Coverage ##################################
 
-coverage_by_active_lod_burden_summary <- combined_results$prediction_diagnostics_by_active_lod_burden_summary |> select(
+coverage_df <- combined_results$prediction_diagnostics_by_active_lod_burden_summary |> select(
     # n,
     # p,
     lod_quantile,
@@ -295,9 +300,9 @@ coverage_by_active_lod_burden_summary <- combined_results$prediction_diagnostics
   pivot_wider(
     names_from = method,
     values_from = empirical_coverage
-  )
-
-coverage_df <- coverage_by_active_lod_burden_summary 
+  ) |> 
+  relocate(uncensored, impute, augmented, trunc_mi, .after = group)
+  
 
 # coverage_df <- coverage_df |> 
 #   # filter(metric=="Coverage") |>
@@ -305,7 +310,7 @@ coverage_df <- coverage_by_active_lod_burden_summary
 #   # select(lod_quantile, group, mean_offset, scale, h_func, uncensored, impute, augmented, trunc_mi) |>
 #   relocate(uncensored, impute, augmented, trunc_mi, .after = h_func )
 
-col_len <- ncol(coverage_df)
+# col_len <- ncol(coverage_df)
 # colnames(coverage_df)[(col_len-3):col_len] <- c("Oracle", "Single Imputation","Augmented", "Truncated MI")
 
 coverage_df$h_func <- label_h_func(coverage_df$h_func)
@@ -315,7 +320,7 @@ draw_nested_metric_plot(
   coverage_df,
   y_name = "CI Coverage",
   steps = c("correlation"),
-  steps_y_base = 1.3,
+  steps_y_base = 1.1,
   steps_y_shift = .05,
   spu_x_shift = .3,
   axis_text_size = 6,
@@ -339,6 +344,7 @@ contrast_df <- combined_results$contrast_summary |>
     mean_offset,
     scale,
     h_func,
+    correlation,
     contrast_family,
     method,
     rmse,
@@ -357,8 +363,17 @@ contrast_df <- combined_results$contrast_summary |>
   select(-'metric')
 
 contrast_df <- contrast_df |> 
-  filter(n==800) |>
-  select(lod_quantile, exposure_dist, mean_offset, scale, h_func, contrast_family, uncensored, impute, augmented, trunc_mi) |>
+  select(lod_quantile, 
+    # exposure_dist, 
+    # mean_offset, 
+    # scale, 
+    # h_func, 
+    correlation,
+    contrast_family, 
+    uncensored, 
+    impute, 
+    augmented, 
+    trunc_mi) |>
   relocate(uncensored, impute, augmented, trunc_mi, .after = contrast_family )
 
 col_len <- ncol(contrast_df)
@@ -370,9 +385,10 @@ contrast_df$h_func <- label_h_func(contrast_df$h_func)
 draw_nested_metric_plot(
   contrast_df,
   y_name = "Contrast RMSE",
-  steps = c("mean_offset", "exposure_dist", "scale"),
+  # steps = c("mean_offset", "exposure_dist", "scale"),
+  steps = c("correlation"),
   grid_rows = "contrast_family",
-  grid_cols = "h_func",
+  # grid_cols = "h_func",
   steps_y_base = -.05,
   steps_y_shift = .05,
   spu_x_shift = .3,

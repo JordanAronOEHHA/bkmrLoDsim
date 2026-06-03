@@ -72,6 +72,7 @@ library(bkmr)
 library(dplyr)
 library(mice)
 library(qgcomp)
+library(fs)
 
 #### Setup Parameters ####
 
@@ -85,11 +86,11 @@ array_id <- as.integer(Sys.getenv("SLURM_ARRAY_TASK_ID"))
 
 if (is.na(array_id)){
   array_id <- 1
-  seeds_per_job <- 1
+  seeds_per_job <- 2
 
   mcmc_iter <- 10
 } else {
-  seeds_per_job <- 2
+  seeds_per_job <- 4
 
   mcmc_iter <- 10000
 }
@@ -1154,7 +1155,10 @@ for (seed in seed_vec){
     ".rds"
   )
 
-  saveRDS(sim_results, file = name)
+  folder_path <- paste0('n',n,'/','lod',lod_quantile)
+  dir_create(folder_path)
+
+  saveRDS(sim_results, file = paste0(folder_path, '/', name))
 
 }
 
