@@ -174,8 +174,8 @@ scales <- c(0.5, 1.5)
 
 grid_all <- expand.grid(Z1 = z1, Z2 = z2, loc_val = locations, lod_vis = lods, scales = scales) %>%
   mutate(
-    # resp = 0.5 * plogis(Z1, location = loc_val, scale = scales) + 0.5 * plogis(Z2, location = loc_val, scale = scales),
-    resp = plogis((Z1+Z2)/2, location = loc_val, scale =scales) ,
+    resp = 1 * plogis(Z1, location = loc_val, scale = scales) * 1 * plogis(Z2, location = loc_val, scale = scales),
+    # resp = plogis((Z1+Z2)/2, location = loc_val, scale =scales) ,
     loc_lab = paste("h Center:", loc_val),
     lod_lab = paste("LOD Quantile:", round(lod_vis, 2)),
     scale_lab = paste("Scale:", scales)
@@ -235,6 +235,6 @@ ggplot(grid_all, aes(x = Z1, y = Z2, z = resp)) +
   theme(ggside.axis.text.x = element_blank(), 
         ggside.axis.text.y = element_blank())
 
-ggsave("h3Dens.png")
+# ggsave("h3Dens.png")
 ```
 

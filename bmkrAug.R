@@ -12,18 +12,18 @@ get_h_config <- function(h_func) {
     `1` = list(
       id = 1L,
       p = 4L,
-      active_idx = 1L,
-      label = "Single Active",
-      h_fun = function(Z_log, mean_offset, scale) {
-        4 * plogis(Z_log[, 1], location = mean_offset, scale = scale)
+      active_idx = 1:2,
+      label = "Linear Additive",
+      h_fun = function(Z_log, mean_offset, scale, lod = NULL) {
+        Z_log[, 1] + Z_log[, 2]
       }
     ),
     `2` = list(
       id = 2L,
       p = 4L,
       active_idx = 1:2,
-      label = "No Interaction",
-      h_fun = function(Z_log, mean_offset, scale) {
+      label = "Nonlinear Additive",
+      h_fun = function(Z_log, mean_offset, scale, lod = NULL) {
         2 * plogis(Z_log[, 1], location = mean_offset, scale = scale) +
           2 * plogis(Z_log[, 2], location = mean_offset, scale = scale)
       }
@@ -32,21 +32,35 @@ get_h_config <- function(h_func) {
       id = 3L,
       p = 4L,
       active_idx = 1:2,
-      label = "Interaction",
-      h_fun = function(Z_log, mean_offset, scale) {
-        4 * plogis(
-          0.5 * (Z_log[, 1] + Z_log[, 2]),
-          location = mean_offset,
-          scale = scale
-        )
+      label = "Synergistic Interaction",
+      h_fun = function(Z_log, mean_offset, scale, lod = NULL) {
+        4 *
+          plogis(Z_log[, 1], location = mean_offset, scale = scale) *
+          plogis(Z_log[, 2], location = mean_offset, scale = scale)
       }
     ),
     `4` = list(
       id = 4L,
+      p = 4L,
+      active_idx = 1L,
+      label = "Threshold Near LoD",
+      h_fun = function(Z_log, mean_offset, scale, lod = NULL) {
+        if (is.null(lod)) {
+          stop("lod is required for h_func = 4")
+        }
+
+        tau <- 0.15
+        z_lod <- log(lod[1])
+        excess <- pmax(0, Z_log[, 1] - z_lod)
+        4 * (1 - exp(-excess / tau))
+      }
+    ),
+    `5` = list(
+      id = 5L,
       p = 8L,
       active_idx = 1:4,
       label = "Four Active",
-      h_fun = function(Z_log, mean_offset, scale) {
+      h_fun = function(Z_log, mean_offset, scale, lod = NULL) {
         rowSums(plogis(
           Z_log[, 1:4, drop = FALSE],
           location = mean_offset,
@@ -90,7 +104,7 @@ if (is.na(array_id)){
 
   mcmc_iter <- 10
 } else {
-  seeds_per_job <- 4
+  seeds_per_job <- 5
 
   mcmc_iter <- 10000
 }
@@ -325,9 +339,9 @@ empty_prediction_diagnostics_by_active_lod_burden <- function() {
 
 ##### Data functions #####
 
-true_h <- function(Z_raw, h_config, mean_offset, scale) {
+true_h <- function(Z_raw, h_config, mean_offset, scale, lod = NULL) {
   Z_log <- log(Z_raw)
-  h_config$h_fun(Z_log, mean_offset, scale)
+  h_config$h_fun(Z_log, mean_offset, scale, lod = lod)
 }
 
 CensorData <- function(Z_true, lod) {
@@ -690,8 +704,8 @@ summarize_fixed_effects_mi <- function(fit_list, method = "trunc_mi") {
 
 contrast_truth <- function(contrast) {
   mean(
-    true_h(contrast$high, h_config, mean_offset, scale) -
-      true_h(contrast$low, h_config, mean_offset, scale)
+    true_h(contrast$high, h_config, mean_offset, scale, lod = lod) -
+      true_h(contrast$low, h_config, mean_offset, scale, lod = lod)
   )
 }
 
@@ -857,7 +871,7 @@ for (seed in seed_vec){
   Z_obs <- CensorData(Z_true, lod)
 
   ##### Response #####
-  h_true <- true_h(Z_true, h_config, mean_offset, scale)
+  h_true <- true_h(Z_true, h_config, mean_offset, scale, lod = lod)
   X <- matrix(rnorm(n * q_fixed_effects), nrow = n)
   X <- scale(X, center = TRUE, scale = FALSE)
   colnames(X) <- paste0("x", seq_len(q_fixed_effects))
@@ -1155,7 +1169,7 @@ for (seed in seed_vec){
     ".rds"
   )
 
-  folder_path <- paste0('n',n,'/','lod',lod_quantile)
+  folder_path <- paste0('h',h_func,'/','n',n,'/','lod',lod_quantile)
   dir_create(folder_path)
 
   saveRDS(sim_results, file = paste0(folder_path, '/', name))
