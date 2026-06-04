@@ -180,9 +180,14 @@ read_sim_result <- function(path) {
   if (counter %% 500 ==0){print(counter)}
   sim_result <- readRDS(path)
 
-  settings <- purrr::map(sim_result$settings, function(x) {
+  vector_setting_names <- c("active_idx", "fixed_effect_beta")
+  settings <- purrr::imap(sim_result$settings, function(x, name) {
     if (length(x) == 0) {
       return(NA)
+    }
+
+    if (name %in% vector_setting_names) {
+      return(paste(x, collapse = ","))
     }
 
     if (length(x) == 1) {
