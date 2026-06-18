@@ -1,17 +1,17 @@
 #!/bin/bash -l
 for size in 400; do
     if [[ $size == "400" ]]; then
-        time_limit="8:00:00"
+        time_limit="40:00:00"
         mem_gb="5"
     else
         time_limit="36:00:00"
         mem_gb="5"
     fi
-    for h_func in 2 3; do
+    for h_func in 1 2 3 4; do
         for lod_quantile in 0.1 0.4 0.7; do
-            for exposure_dist in norm; do
+            for exposure_dist in norm unif; do
                 for mean_offset in -1 0 1; do
-                    for scale in 0.75 1.25; do
+                    for scale in 1.25; do
                         for correlation in ind within across; do
                             sbatch --time="$time_limit" --mem="${mem_gb}gb" bkmrLoD.sh $size $lod_quantile $exposure_dist $mean_offset $h_func $scale $correlation
                         done

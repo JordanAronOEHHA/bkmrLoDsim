@@ -1,7 +1,7 @@
 #!/bin/bash -l
 #SBATCH --nodes=1
 #SBATCH --ntasks-per-node=1
-#SBATCH --array=1-20
+#SBATCH --array=1-5
 #SBATCH --mail-type=NONE
 #SBATCH --mail-user=aron0064@umn.edu
 #SBATCH -A mfiecas

@@ -13,34 +13,69 @@ get_h_config <- function(h_func) {
       id = 1L,
       p = 4L,
       active_idx = 1:2,
-      label = "Linear Additive",
+      label = "Nonlinear Additive (2)",
       h_fun = function(Z_log, mean_offset, scale, lod = NULL) {
-        Z_log[, 1] + Z_log[, 2]
+        2 * plogis(Z_log[, 1], location = mean_offset, scale = scale) +
+        2 * plogis(Z_log[, 2], location = mean_offset, scale = scale)
       }
     ),
     `2` = list(
       id = 2L,
       p = 4L,
       active_idx = 1:2,
-      label = "Nonlinear Additive",
-      h_fun = function(Z_log, mean_offset, scale, lod = NULL) {
-        2 * plogis(Z_log[, 1], location = mean_offset, scale = scale) +
-          2 * plogis(Z_log[, 2], location = mean_offset, scale = scale)
-      }
-    ),
-    `3` = list(
-      id = 3L,
-      p = 4L,
-      active_idx = 1:2,
-      label = "Synergistic Interaction",
+      label = "Nonlinear Interaction (2)",
       h_fun = function(Z_log, mean_offset, scale, lod = NULL) {
         4 *
           plogis(Z_log[, 1], location = mean_offset, scale = scale) *
           plogis(Z_log[, 2], location = mean_offset, scale = scale)
       }
     ),
+    `3` = list(
+      id = 3L,
+      p = 8L,
+      active_idx = 1:4,
+      label = "Nonlinear Additive (4)",
+      h_fun = function(Z_log, mean_offset, scale, lod = NULL) {
+        rowSums(plogis(
+          Z_log[, 1:4, drop = FALSE],
+          location = mean_offset,
+          scale = scale
+        ))
+      }
+    ),
     `4` = list(
       id = 4L,
+      p = 8L,
+      active_idx = 1:4,
+      label = "Nonlinear Interaction (4)",
+      h_fun = function(Z_log, mean_offset, scale, lod = NULL) {
+        rowProds(plogis(
+          Z_log[, 1:4, drop = FALSE],
+          location = mean_offset,
+          scale = scale
+        ))
+      }
+    ),
+    `5` = list(
+      id = 5L,
+      p = 4L,
+      active_idx = 1:2,
+      label = "Linear Additive (2) ",
+      h_fun = function(Z_log, mean_offset, scale, lod = NULL) {
+        Z_log[, 1] + Z_log[, 2]
+      }
+    ),
+    `6` = list(
+      id = 6L,
+      p = 8L,
+      active_idx = 1:4,
+      label = "Linear Additive (4) ",
+      h_fun = function(Z_log, mean_offset, scale, lod = NULL) {
+        Z_log[, 1] + Z_log[, 2] + Z_log[, 3] + Z_log[, 4]
+      }
+    ),
+    `7` = list(
+      id = 7L,
       p = 4L,
       active_idx = 1L,
       label = "Threshold Near LoD",
@@ -54,33 +89,8 @@ get_h_config <- function(h_func) {
         excess <- pmax(0, Z_log[, 1] - z_lod)
         4 * (1 - exp(-excess / tau))
       }
-    ),
-    `5` = list(
-      id = 5L,
-      p = 8L,
-      active_idx = 1:4,
-      label = "Four Active",
-      h_fun = function(Z_log, mean_offset, scale, lod = NULL) {
-        rowSums(plogis(
-          Z_log[, 1:4, drop = FALSE],
-          location = mean_offset,
-          scale = scale
-        ))
-      }
-    ),
-    `6` = list(
-      id = 5L,
-      p = 8L,
-      active_idx = 1:4,
-      label = "Four Active Interaction",
-      h_fun = function(Z_log, mean_offset, scale, lod = NULL) {
-        rowProds(plogis(
-          Z_log[, 1:4, drop = FALSE],
-          location = mean_offset,
-          scale = scale
-        ))
-      }
     )
+    
   )
 
   config <- configs[[as.character(h_func)]]
@@ -100,6 +110,7 @@ library(dplyr)
 library(mice)
 library(qgcomp)
 library(fs)
+library(matrixStats)
 
 #### Setup Parameters ####
 
@@ -117,7 +128,7 @@ if (is.na(array_id)){
 
   mcmc_iter <- 10
 } else {
-  seeds_per_job <- 1
+  seeds_per_job <- 20
 
   mcmc_iter <- 10000
 }
@@ -145,9 +156,6 @@ if (length(args) >= 6) scale <- as.numeric(args[6])
 if (length(args) >= 7) correlation <- args[7]
 
 correlation <- match.arg(correlation, c("ind", "within", "across"))
-if (correlation != "ind" && exposure_dist != "norm") {
-  stop("correlation = 'within' or 'across' is currently implemented only for exposure_dist = 'norm'")
-}
 
 h_config <- get_h_config(h_func)
 
@@ -185,9 +193,9 @@ active_lod_group_levels <- function() {
 
   paste0(
     active_above_count,
-    " active above / ",
-    active_below_count,
-    " below LoD"
+    " active above"
+    # active_below_count,
+    # " below LoD"
   )
 }
 
@@ -203,9 +211,9 @@ active_lod_group <- function(Z_obs) {
 
   paste0(
     active_above_count,
-    " active above / ",
-    active_below_count,
-    " below LoD"
+    " active above"
+    # active_below_count,
+    # " below LoD"
   )
 }
 
@@ -855,30 +863,30 @@ for (seed in seed_vec){
   #LoD is based on quantile of true distribution
   #Alternative is to censor x% of data but not current use 
   #lod <- apply(Z_true, 2, quantile, probs = lod_quantile)
-  if (exposure_dist == "norm") {
-    norm1 <- 0
-    norm2 <- 1
-    Z_true <- simulate_lognormal_exposures(
-      n = n,
-      p = p,
-      mean = norm1,
-      sd = norm2,
-      correlation = correlation,
-      active_idx = active_idx
-    )
-    lod <- exp(qnorm(lod_quantile, mean = norm1, sd = norm2))
-    lod <- rep(lod, p)
-
-  } else if (exposure_dist == "unif") {
+  
+  norm1 <- 0
+  norm2 <- 1
+  Z_true <- simulate_lognormal_exposures(
+    n = n,
+    p = p,
+    mean = norm1,
+    sd = norm2,
+    correlation = correlation,
+    active_idx = active_idx
+  )
+  lod <- exp(qnorm(lod_quantile, mean = norm1, sd = norm2))
+  lod <- rep(lod, p)
+  
+  if (exposure_dist == "unif") {
     unif1 = -3
     unif2 = 3
-    Z_true <- matrix(exp(runif(n * p, min = unif1, max = unif2)), ncol = p)
+
+    Z_true <- exp((pnorm(log(Z_true),norm1,norm2) * 6 ) - 3)
     lod <- exp(qunif(lod_quantile, min = unif1, max = unif2))
     lod <- rep(lod, p)
+  } 
 
-  } else {
-    stop("exposure_dist must be 'norm' or 'unif'")
-  }
+  
 
   # Create observed data with censoring
   Z_obs <- CensorData(Z_true, lod)
@@ -1182,7 +1190,7 @@ for (seed in seed_vec){
     ".rds"
   )
 
-  folder_path <- paste0(exposure_dist,'/','h',h_func,'/','n',n,'/','lod',lod_quantile)
+  folder_path <- paste0(exposure_dist,'/','h',h_func,'/','n',n,'/','lod',lod_quantile,'/','cor',correlation)
   dir_create(folder_path)
 
   saveRDS(sim_results, file = paste0(folder_path, '/', name))
