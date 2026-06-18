@@ -67,6 +67,19 @@ get_h_config <- function(h_func) {
           scale = scale
         ))
       }
+    ),
+    `6` = list(
+      id = 5L,
+      p = 8L,
+      active_idx = 1:4,
+      label = "Four Active Interaction",
+      h_fun = function(Z_log, mean_offset, scale, lod = NULL) {
+        rowProds(plogis(
+          Z_log[, 1:4, drop = FALSE],
+          location = mean_offset,
+          scale = scale
+        ))
+      }
     )
   )
 
@@ -104,7 +117,7 @@ if (is.na(array_id)){
 
   mcmc_iter <- 10
 } else {
-  seeds_per_job <- 5
+  seeds_per_job <- 1
 
   mcmc_iter <- 10000
 }
@@ -1169,7 +1182,7 @@ for (seed in seed_vec){
     ".rds"
   )
 
-  folder_path <- paste0('h',h_func,'/','n',n,'/','lod',lod_quantile)
+  folder_path <- paste0(exposure_dist,'/','h',h_func,'/','n',n,'/','lod',lod_quantile)
   dir_create(folder_path)
 
   saveRDS(sim_results, file = paste0(folder_path, '/', name))
